@@ -1,0 +1,7 @@
+{
+  "names": ["Mara", "Orrin", "Vey"],
+  "narrator": "Mara",
+  "text": "\"Get out,\" Orrin said, pointing at the door. I did not move. Vey, the innkeeper, had warned me about him years ago, and I had never forgotten it.",
+  "must_be_present": ["Mara", "Orrin"],
+  "must_not_be_present": ["Vey"]
+}

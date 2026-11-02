@@ -1,0 +1,7 @@
+{
+  "names": ["Mara", "Orrin", "Bel", "Corran"],
+  "narrator": "Mara",
+  "text": "Corran is dead, I told myself, and Orrin would not speak to me. Bel once promised to meet me at the bridge. I walked there alone at dusk, the water loud beneath the stones, and found the bridge empty.",
+  "must_be_present": ["Mara"],
+  "must_not_be_present": ["Corran", "Orrin", "Bel"]
+}

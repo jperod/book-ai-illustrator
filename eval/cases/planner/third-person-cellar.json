@@ -1,0 +1,7 @@
+{
+  "names": ["Tomas", "Ilse", "Bram"],
+  "narrator": "",
+  "text": "Tomas carried the lantern down the cellar steps while Ilse held the door. Bram was upstairs, asleep, and never saw them go.",
+  "must_be_present": ["Tomas", "Ilse"],
+  "must_not_be_present": ["Bram"]
+}
