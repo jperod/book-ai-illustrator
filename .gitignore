@@ -2,10 +2,11 @@
 __pycache__/
 *.pyc
 
-# Personal data: your books and the images they produce.
-# Only the example book is tracked.
+# Personal data: books and the images they produce.
+# New books are ignored by default. Track one by adding a "!books/<file>.json" line.
 books/*.json
 !books/example-book.json
+!books/assassins-apprentice.json
 outputs/
 
 # Logs and local runtime files

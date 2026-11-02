@@ -61,7 +61,9 @@ cd book-ai-illustrator
 
 ### 4. Add your books
 
-Copy `books/example-book.json` to `books/<your-book>.json` and edit it. Book files are git-ignored on purpose. They hold your own notes, and character descriptions from copyrighted books should stay out of a public repository.
+Copy `books/example-book.json` to `books/<your-book>.json` and edit it. New book files are git-ignored by default, so personal notes don't get committed by accident. To share a book in the repository, add a `!books/<your-book>.json` line to `.gitignore`.
+
+The repository includes `books/assassins-apprentice.json` as a worked example: a full visual style and a character list for Robin Hobb's novel.
 
 ## Running
 
@@ -112,7 +114,7 @@ server.py           local web server, ComfyUI client, prompt builder, progress r
 index.html          the page (one file, no build step)
 workflow_api.json   FLUX.2 Klein 4B text-to-image graph in ComfyUI's API format
 config.json         settings
-books/              one JSON file per book (your own books are git-ignored)
+books/              one JSON file per book (new books are git-ignored unless listed in .gitignore)
 tests/              tests that use a fake ComfyUI, so no GPU is needed
 outputs/            generated images (git-ignored, created on first run)
 ```
