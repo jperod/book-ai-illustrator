@@ -143,3 +143,7 @@ Ideas, not built yet:
 - The text encoder and VAE are repackaged by [Comfy-Org](https://huggingface.co/Comfy-Org/flux2-klein-4B), Apache 2.0.
 
 The code in this repository is MIT licensed. See [LICENSE](LICENSE).
+
+## Disclaimer
+
+Not affiliated with any author or publisher. For personal use; you're responsible for the rights to any book you use.
