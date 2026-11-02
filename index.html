@@ -35,15 +35,67 @@
     color: var(--text);
     font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  main {
-    max-width: 720px;
+
+  .layout {
+    max-width: 1000px;
     margin: 0 auto;
     padding: 32px 16px 64px;
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
+  }
+
+  /* Sidebar: list of books */
+  .sidebar { position: sticky; top: 24px; }
+  .sidebar h2 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #books { display: flex; flex-direction: column; gap: 4px; }
+  .book-row {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid transparent;
+    border-radius: 6px;
+  }
+  .book-row:hover { border-color: var(--line); }
+  .book-row.active { background: var(--panel); border-color: var(--line); }
+  .book {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    color: var(--text);
+    border: 0;
+    padding: 10px 12px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .book .title { display: block; font-weight: 600; }
+  .book .meta { display: block; font-size: 12px; color: var(--muted); }
+  .pin {
+    background: none;
+    border: 0;
+    padding: 0 10px;
+    font-size: 16px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .pin:hover, .pin.pinned { color: var(--text); }
+
+  /* Main column */
+  .content {
     display: flex;
     flex-direction: column;
     gap: 16px;
+    min-width: 0;
   }
-  select, textarea {
+  textarea {
     width: 100%;
     background: var(--panel);
     color: var(--text);
@@ -51,11 +103,36 @@
     border-radius: 6px;
     padding: 12px;
     font: inherit;
+    resize: vertical;
   }
-  select { padding: 10px 12px; }
-  textarea { resize: vertical; }
-  textarea:focus, select:focus { outline: 1px solid var(--muted); }
+  textarea:focus { outline: 1px solid var(--muted); }
   #text { min-height: 240px; }
+  #scene { min-height: 90px; }
+
+  .narrator {
+    padding: 10px 12px 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .narrator select {
+    margin-left: 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font: inherit;
+  }
+
+  #promptBox summary { border-bottom: none; }
+  #promptText {
+    margin: 0;
+    padding: 12px;
+    white-space: pre-wrap;
+    font: 13px/1.5 ui-monospace, Consolas, monospace;
+    color: var(--text);
+    border-top: 1px solid var(--line);
+  }
 
   details {
     border: 1px solid var(--line);
@@ -76,7 +153,7 @@
   }
   details textarea:focus { outline: none; }
 
-  button {
+  button#go {
     align-self: flex-start;
     background: var(--accent);
     color: var(--accent-text);
@@ -87,7 +164,7 @@
     font-weight: 600;
     cursor: pointer;
   }
-  button:disabled { opacity: 0.5; cursor: progress; }
+  button#go:disabled { opacity: 0.5; cursor: progress; }
 
   #progress { display: flex; flex-direction: column; gap: 6px; }
   #bar {
@@ -132,36 +209,60 @@
     border: 1px solid var(--line);
     border-radius: 6px;
   }
+
+  /* Narrow screens: the book list moves above the page as a row of chips */
+  @media (max-width: 760px) {
+    .layout { grid-template-columns: 1fr; gap: 20px; }
+    .sidebar { position: static; }
+    #books { flex-direction: row; flex-wrap: wrap; }
+    .book-row { width: auto; }
+  }
 </style>
 </head>
 <body>
-<main>
-  <select id="book" aria-label="Book"></select>
+<div class="layout">
+  <aside class="sidebar">
+    <h2>Books</h2>
+    <nav id="books" aria-label="Books"></nav>
+  </aside>
 
-  <textarea id="text" placeholder="Paste a page of the book here"></textarea>
+  <main class="content">
+    <textarea id="text" placeholder="Paste a page of the book here"></textarea>
+    <textarea id="scene" placeholder="Optional: describe the moment in 2–3 visible sentences. Leave empty to use the page."></textarea>
 
-  <details id="styleBox">
-    <summary>Visual style</summary>
-    <textarea id="style" placeholder="Art style, palette, lighting, mood…"></textarea>
-  </details>
+    <details id="styleBox">
+      <summary>Visual style</summary>
+      <textarea id="style" placeholder="Art style, palette, lighting, mood…"></textarea>
+    </details>
 
-  <details id="charsBox">
-    <summary>Characters</summary>
-    <textarea id="characters" placeholder="One per line, name first:&#10;Hero: tall, dark hair, grey wool cloak&#10;Companion: small white dog, red collar"></textarea>
-  </details>
+    <details id="charsBox">
+      <summary>Characters</summary>
+      <div class="narrator">
+        Narrator
+        <select id="narrator" aria-label="Narrator">
+          <option value="">None</option>
+        </select>
+      </div>
+      <textarea id="characters" placeholder="One per line, name first:&#10;Hero: tall, dark hair, grey wool cloak&#10;Companion: small white dog, red collar"></textarea>
+    </details>
 
-  <button id="go">Generate</button>
-  <div id="progress" hidden>
-    <div id="bar"><div id="fill"></div></div>
-    <div id="stage"></div>
-  </div>
-  <div id="status"></div>
-  <div id="result"></div>
-</main>
+    <button id="go">Generate</button>
+    <div id="progress" hidden>
+      <div id="bar"><div id="fill"></div></div>
+      <div id="stage"></div>
+    </div>
+    <div id="status"></div>
+    <div id="result"></div>
+    <details id="promptBox" hidden>
+      <summary>Prompt used</summary>
+      <pre id="promptText"></pre>
+    </details>
+  </main>
+</div>
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const bookEl = $("book");
+  const booksEl = $("books");
   const textEl = $("text");
   const styleEl = $("style");
   const charsEl = $("characters");
@@ -170,6 +271,10 @@
   const goBtn = $("go");
   const statusEl = $("status");
   const resultEl = $("result");
+  const narratorEl = $("narrator");
+  const sceneEl = $("scene");
+  const promptBox = $("promptBox");
+  const promptText = $("promptText");
   let currentBook = "";
 
   function setStatus(msg, isError = false) {
@@ -199,29 +304,119 @@
     } catch (e) { /* ignore a missed poll */ }
   }
 
+  // Character names are the part of each 'Name: description' line before the colon.
+  function characterNames() {
+    const names = [];
+    for (const line of charsEl.value.split("\n")) {
+      const i = line.indexOf(":");
+      if (i < 0) continue;
+      const name = line.slice(0, i).trim();
+      if (name && line.slice(i + 1).trim()) names.push(name);
+    }
+    return names;
+  }
+
+  function refreshNarratorOptions(selected) {
+    const names = characterNames();
+    narratorEl.replaceChildren(
+      new Option("None", ""),
+      ...names.map((n) => new Option(n, n)),
+    );
+    narratorEl.value = names.includes(selected) ? selected : "";
+  }
+
+  // The default book is saved on the server, so it survives restarts and browser changes.
+  let defaultBook = "";
+
+  async function loadSettings() {
+    try {
+      const s = await (await fetch("/api/settings")).json();
+      defaultBook = s.default_book || "";
+    } catch (e) {
+      defaultBook = "";
+    }
+  }
+
+  function renderPins() {
+    for (const row of booksEl.children) {
+      const pin = row.querySelector(".pin");
+      const pinned = row.dataset.id === defaultBook;
+      pin.classList.toggle("pinned", pinned);
+      pin.textContent = pinned ? "★" : "☆";
+      pin.title = pinned ? "Default book (click to clear)" : "Make this the default book";
+      pin.setAttribute("aria-label", pin.title);
+    }
+  }
+
+  async function setDefaultBook(id) {
+    const next = id === defaultBook ? "" : id;
+    try {
+      const r = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ default_book: next }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      defaultBook = next;
+      renderPins();
+      setStatus(next ? "Default book saved." : "Default cleared. The first book is used.");
+    } catch (e) {
+      setStatus("Could not save the default book: " + e.message, true);
+    }
+  }
+
   async function loadBooks() {
     try {
       const books = await (await fetch("/api/books")).json();
-      bookEl.replaceChildren(...books.map((b) => {
-        const opt = document.createElement("option");
-        opt.value = b.id;
-        opt.textContent = `${b.title} (${b.series}, book ${b.book_number})`;
-        return opt;
+      if (!books.length) {
+        setStatus("No books found in the books folder.", true);
+        return;
+      }
+      booksEl.replaceChildren(...books.map((b) => {
+        const row = document.createElement("div");
+        row.className = "book-row";
+        row.dataset.id = b.id;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "book";
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = b.title;
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = [b.series, b.book_number ? `Book ${b.book_number}` : ""].filter(Boolean).join(" · ");
+        btn.append(title, meta);
+        btn.addEventListener("click", () => selectBook(b.id));
+        const pin = document.createElement("button");
+        pin.type = "button";
+        pin.className = "pin";
+        pin.addEventListener("click", () => setDefaultBook(b.id));
+        row.append(btn, pin);
+        return row;
       }));
-      if (books.length) await selectBook(books[0].id);
-      else setStatus("No books found in the books folder.", true);
+      await loadSettings();
+      renderPins();
+      // Start with the pinned book if it still exists, otherwise the first one.
+      const start = books.some((b) => b.id === defaultBook) ? defaultBook : books[0].id;
+      await selectBook(start);
     } catch (e) {
       setStatus("The local server is not responding.", true);
     }
   }
 
+  // Picking a book fills in its visual style and characters.
   async function selectBook(id) {
     try {
-      const b = await (await fetch(`/api/books/${encodeURIComponent(id)}`)).json();
+      const r = await fetch(`/api/books/${encodeURIComponent(id)}`);
+      if (!r.ok) throw new Error("unknown book");
+      const b = await r.json();
       currentBook = id;
-      bookEl.value = id;
+      for (const row of booksEl.children) {
+        row.classList.toggle("active", row.dataset.id === id);
+      }
       styleEl.value = b.visual_style || "";
       charsEl.value = b.characters_text || "";
+      refreshNarratorOptions(b.narrator || "");
       // Open each box only when it is empty.
       styleBox.open = !styleEl.value.trim();
       charsBox.open = !charsEl.value.trim();
@@ -229,8 +424,6 @@
       setStatus("Could not load that book.", true);
     }
   }
-
-  bookEl.addEventListener("change", () => selectBook(bookEl.value));
 
   // Save a field to the book it was typed in, shortly after typing stops.
   function autosave(el, field) {
@@ -251,6 +444,16 @@
   }
   autosave(styleEl, "visual_style");
   autosave(charsEl, "characters_text");
+  charsEl.addEventListener("input", () => refreshNarratorOptions(narratorEl.value));
+
+  narratorEl.addEventListener("change", () => {
+    if (!currentBook) return;
+    fetch(`/api/books/${encodeURIComponent(currentBook)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ narrator: narratorEl.value }),
+    }).catch(() => {});
+  });
 
   async function checkStatus() {
     try {
@@ -263,6 +466,8 @@
   }
 
   async function generate() {
+    // The button is disabled while a run is in progress; Ctrl+Enter must not bypass that.
+    if (goBtn.disabled) return;
     const text = textEl.value.trim();
     if (!text) {
       setStatus("Paste some text first.", true);
@@ -281,6 +486,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text,
+          scene: sceneEl.value,
           book: currentBook,
           visual_style: styleEl.value,
           characters_text: charsEl.value,
@@ -293,6 +499,8 @@
       img.alt = "Illustration";
       img.src = data.image_url + "?t=" + Date.now();
       resultEl.replaceChildren(img);
+      promptText.textContent = data.prompt || "";
+      promptBox.hidden = false;
       setBar(1, 1, "Done");
       setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s`);
     } catch (e) {

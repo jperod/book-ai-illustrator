@@ -25,6 +25,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 WORKFLOW_PATH = os.path.join(BASE_DIR, "workflow_api.json")
 BOOKS_DIR = os.path.join(BASE_DIR, "books")
+SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")  # per-machine settings, e.g. the default book
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 INDEX_PATH = os.path.join(BASE_DIR, "index.html")
 
@@ -35,8 +36,10 @@ CONFIG = {
     "height": 1024,
     "timeout_seconds": 600,
     "open_browser": True,
-    "steps": 4,
+    "steps": 8,
 }
+
+MAX_BODY_BYTES = 1_000_000  # largest request body the server accepts
 
 # One generation at a time: the GPU can only do one well.
 GENERATE_LOCK = threading.Lock()
@@ -58,40 +61,88 @@ BOOK_ID_RE = re.compile(r"^[a-z0-9-]+$")
 
 
 def book_file(book_id):
-    if not BOOK_ID_RE.match(book_id):
+    if not BOOK_ID_RE.fullmatch(book_id):
         raise ValueError(f"bad book id: {book_id!r}")
     return os.path.join(BOOKS_DIR, book_id + ".json")
+
+
+class BookFileError(Exception):
+    """A book file exists but cannot be read as a book."""
 
 
 def load_book(book_id):
     path = book_file(book_id)
     if not os.path.exists(path):
         raise FileNotFoundError(book_id)
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            book = json.load(f)
+    except (OSError, ValueError) as e:
+        raise BookFileError(f"{book_id}.json could not be read: {e}") from e
+    if not isinstance(book, dict):
+        raise BookFileError(f"{book_id}.json does not contain a JSON object")
+    # The file name is the book's id, so a copied file cannot take over another book.
+    book["id"] = book_id
+    return book
+
+
+BOOK_WRITE_LOCK = threading.Lock()
+SETTINGS_LOCK = threading.Lock()
+
+
+def read_settings():
+    """Settings saved on this machine. A missing or unreadable file means the defaults."""
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        print(f"Ignoring unreadable settings file: {e}")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_settings(settings):
+    tmp = SETTINGS_PATH + ".tmp"
+    with SETTINGS_LOCK:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, SETTINGS_PATH)
 
 
 def save_book(book):
+    """Writes books/<id>.json atomically (temp file, then replace)."""
+    target = book_file(book["id"])
     os.makedirs(BOOKS_DIR, exist_ok=True)
-    with open(book_file(book["id"]), "w", encoding="utf-8") as f:
-        json.dump(book, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    tmp = target + ".tmp"
+    with BOOK_WRITE_LOCK:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(book, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, target)
 
 
 def list_books():
     books = []
     if os.path.isdir(BOOKS_DIR):
         for fn in os.listdir(BOOKS_DIR):
-            if fn.endswith(".json"):
+            stem = fn[: -len(".json")] if fn.endswith(".json") else ""
+            if not BOOK_ID_RE.fullmatch(stem):
+                continue
+            try:
                 with open(os.path.join(BOOKS_DIR, fn), encoding="utf-8") as f:
                     b = json.load(f)
                 books.append({
-                    "id": b["id"],
-                    "title": b.get("title", b["id"]),
-                    "author": b.get("author", ""),
-                    "series": b.get("series", ""),
-                    "book_number": b.get("book_number", 0),
+                    "id": stem,
+                    "title": str(b.get("title", stem)),
+                    "author": str(b.get("author", "")),
+                    "series": str(b.get("series", "")),
+                    "book_number": int(b.get("book_number", 0) or 0),
                 })
+            except (OSError, ValueError, TypeError, AttributeError) as e:
+                print(f"Skipping unreadable book file {fn}: {e}")
     return sorted(books, key=lambda b: (b["series"], b["book_number"], b["title"]))
 
 
@@ -112,6 +163,8 @@ def book_view(book):
         "series": book.get("series", ""),
         "book_number": book.get("book_number", 0),
         "visual_style": book.get("visual_style", ""),
+        "visual_style_short": book.get("visual_style_short", ""),
+        "narrator": book.get("narrator", ""),
         "characters_text": characters_to_text(book.get("characters", [])),
     }
 
@@ -121,8 +174,12 @@ def update_book(book_id, fields):
     book = load_book(book_id)
     if "visual_style" in fields:
         book["visual_style"] = str(fields["visual_style"])
+    if "visual_style_short" in fields:
+        book["visual_style_short"] = str(fields["visual_style_short"])
     if "characters_text" in fields:
         book["characters"] = text_to_characters(str(fields["characters_text"]))
+    if "narrator" in fields:
+        book["narrator"] = str(fields["narrator"]).strip()
     save_book(book)
     return book
 
@@ -142,25 +199,46 @@ def parse_characters(characters_text):
     return chars
 
 
-def characters_in_scene(characters_text, scene_text):
-    """Only the characters whose name appears in the pasted text are added to the prompt."""
-    return [
-        (name, desc)
-        for name, desc in parse_characters(characters_text)
-        # Case-sensitive on purpose: "patience", "regal" or "fool" in lowercase are ordinary words.
-        if re.search(r"\b" + re.escape(name) + r"\b", scene_text)
-    ]
+def name_in_text(name, text):
+    # Case-sensitive on purpose: "patience", "regal" or "fool" in lowercase are ordinary words.
+    return re.search(r"\b" + re.escape(name) + r"\b", text) is not None
 
 
-def build_prompt(style, text, characters_text=""):
-    # Scene first, then characters, then style: putting the long style text first
-    # was pulling compositions indoors.
-    text = text.strip()
-    parts = [SINGLE_IMAGE_NOTE, "", "Scene from the book:", text]
-    chars = characters_in_scene(characters_text, text)
+# First-person narration: "I" (capital only, so the letter does not match inside words),
+# and me/my/mine/myself in any case. Quoted dialogue is removed before this is checked.
+FIRST_PERSON_RE = re.compile(r"\bI\b|\b(?i:me|my|mine|myself)\b")
+QUOTE_RE = re.compile(r'"[^"]*"|“[^”]*”')
+
+
+def has_first_person(text):
+    """True if the narration (dialogue removed) is written in the first person."""
+    return FIRST_PERSON_RE.search(QUOTE_RE.sub(" ", text)) is not None
+
+
+def characters_in_scene(characters_text, scene_text, narrator=""):
+    """Characters named in the text, plus the narrator when the text is first person.
+    The narrator is listed first."""
+    chars = parse_characters(characters_text)
+    narrator_entry = [c for c in chars if narrator and c[0] == narrator]
+    others = [c for c in chars if not (narrator and c[0] == narrator) and name_in_text(c[0], scene_text)]
+    narrator_present = bool(narrator_entry) and (has_first_person(scene_text) or name_in_text(narrator, scene_text))
+    return (narrator_entry if narrator_present else []) + others
+
+
+def build_prompt(style, text, characters_text="", narrator="", scene=""):
+    # Subject first: who is in the picture, then the scene, then the style.
+    # `text` is the pasted page and is used for name matching. `scene`, when given,
+    # replaces the page text in the prompt itself.
+    matching_text = text.strip() + "\n" + scene.strip()
+    scene_text = scene.strip() or text.strip()
+    parts = [SINGLE_IMAGE_NOTE]
+    chars = characters_in_scene(characters_text, matching_text, narrator)
     if chars:
         parts += ["", "Characters in this scene (keep their appearance consistent):"]
-        parts += [f"- {name}: {desc}" for name, desc in chars]
+        for name, desc in chars:
+            tag = " (the narrator, the viewpoint character)" if narrator and name == narrator else ""
+            parts.append(f"- {name}{tag}: {desc}")
+    parts += ["", "Scene from the book:", scene_text]
     if style.strip():
         parts += ["", f"Visual style: {style.strip()}"]
     return "\n".join(parts)
@@ -412,10 +490,15 @@ def start_progress_listener(client_id, node_types):
     return listener
 
 
-def generate_image(text, style, characters_text=""):
-    """Run the workflow on ComfyUI, wait for it, save the PNG. Returns (filename, prompt)."""
-    prompt_text = build_prompt(style, text, characters_text)
+def generate_image(text, style, characters_text="", narrator="", scene=""):
+    """Run the workflow on ComfyUI, wait for it, save the PNG. Returns (filename, prompt, seed)."""
+    prompt_text = build_prompt(style, text, characters_text, narrator, scene)
     workflow = make_workflow(prompt_text)
+    seed = next(
+        (n["inputs"]["noise_seed"] for n in workflow.values()
+         if isinstance(n, dict) and isinstance(n.get("inputs", {}).get("noise_seed"), int)),
+        None,
+    )
     client_id = uuid.uuid4().hex
     node_types = {nid: str(node.get("class_type", "")) for nid, node in workflow.items() if isinstance(node, dict)}
 
@@ -423,7 +506,8 @@ def generate_image(text, style, characters_text=""):
     listener = start_progress_listener(client_id, node_types)
     try:
         queued = comfy_post_json("/prompt", {"prompt": workflow, "client_id": client_id})
-        return _wait_for_result(queued["prompt_id"], prompt_text)
+        name, prompt = _wait_for_result(queued["prompt_id"], prompt_text)
+        return name, prompt, seed
     finally:
         if listener:
             listener.stop()
@@ -479,8 +563,16 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         self._send(code, json.dumps(obj).encode("utf-8"), "application/json; charset=utf-8")
 
+    def _host_ok(self):
+        # Blocks DNS rebinding: only requests addressed to this server's own port are served.
+        port = self.server.server_address[1]
+        return (self.headers.get("Host") or "").lower() in (f"127.0.0.1:{port}", f"localhost:{port}")
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if not self._host_ok():
+            self._send(403, b"forbidden", "text/plain")
+            return
         if path == "/":
             with open(INDEX_PATH, "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
@@ -497,6 +589,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, book_view(load_book(path[len("/api/books/"):])))
             except (FileNotFoundError, ValueError):
                 self._json(404, {"error": "Unknown book."})
+            except BookFileError as e:
+                self._json(500, {"error": str(e)})
+        elif path == "/api/settings":
+            self._json(200, read_settings())
         elif path == "/api/progress":
             self._json(200, get_progress())
         elif path.startswith("/outputs/"):
@@ -509,13 +605,38 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"not found", "text/plain")
 
+    def _read_json_body(self):
+        """Returns the request's JSON object, or None after sending an error response."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._json(400, {"error": "Bad Content-Length."})
+            return None
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._json(413, {"error": "Request too large."})
+            return None
+        raw = self.rfile.read(length) if length else b""  # read the body before replying
+        content_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            self._json(415, {"error": "Send JSON with Content-Type: application/json."})
+            return None
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:  # JSON syntax errors and bad UTF-8 are both ValueErrors
+            self._json(400, {"error": "Invalid JSON."})
+            return None
+        if not isinstance(body, dict):
+            self._json(400, {"error": "Expected a JSON object."})
+            return None
+        return body
+
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
-        length = int(self.headers.get("Content-Length", 0))
-        try:
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except json.JSONDecodeError:
-            self._json(400, {"error": "Invalid JSON."})
+        if not self._host_ok():
+            self._send(403, b"forbidden", "text/plain")
+            return
+        body = self._read_json_body()
+        if body is None:
             return
 
         if path.startswith("/api/books/"):
@@ -524,9 +645,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True})
             except (FileNotFoundError, ValueError):
                 self._json(404, {"error": "Unknown book."})
+            except BookFileError as e:
+                self._json(500, {"error": str(e)})
+
+        elif path == "/api/settings":
+            book_id = str(body.get("default_book", "")).strip()
+            if book_id:
+                try:
+                    load_book(book_id)  # the default must be a book that exists
+                except (FileNotFoundError, ValueError):
+                    self._json(404, {"error": "Unknown book."})
+                    return
+                except BookFileError as e:
+                    self._json(500, {"error": str(e)})
+                    return
+            settings = read_settings()
+            settings["default_book"] = book_id
+            write_settings(settings)
+            self._json(200, {"default_book": book_id})
 
         elif path == "/api/generate":
             text = str(body.get("text", "")).strip()
+            scene = str(body.get("scene", "")).strip()
             if not text:
                 self._json(400, {"error": "Paste some text first."})
                 return
@@ -536,11 +676,15 @@ class Handler(BaseHTTPRequestHandler):
             except (FileNotFoundError, ValueError):
                 self._json(400, {"error": "Pick a book first."})
                 return
-            style = book.get("visual_style", "")
+            except BookFileError as e:
+                self._json(500, {"error": str(e)})
+                return
+            style = book.get("visual_style_short") or book.get("visual_style", "")
             characters_text = characters_to_text(book.get("characters", []))
+            narrator = book.get("narrator", "")
             with GENERATE_LOCK:
                 try:
-                    name, prompt = generate_image(text, style, characters_text)
+                    name, prompt, seed = generate_image(text, style, characters_text, narrator, scene)
                 except urllib.error.HTTPError as e:
                     self._json(500, {"error": f"ComfyUI returned HTTP {e.code} for {e.url}"})
                     return
@@ -550,7 +694,12 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._json(500, {"error": str(e)})
                     return
-            self._json(200, {"image_url": f"/outputs/{name}", "prompt": prompt})
+            self._json(200, {
+                "image_url": f"/outputs/{name}",
+                "prompt": prompt,
+                "seed": seed,
+                "scene_source": "scene" if scene else "page",
+            })
 
         else:
             self._send(404, b"not found", "text/plain")

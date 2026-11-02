@@ -84,12 +84,13 @@ class TempDirsMixin:
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="bi-test-")
-        self._saved = (server.BOOKS_DIR, server.OUTPUT_DIR, dict(server.CONFIG))
+        self._saved = (server.BOOKS_DIR, server.OUTPUT_DIR, server.SETTINGS_PATH, dict(server.CONFIG))
         server.BOOKS_DIR = os.path.join(self.tmp, "books")
         server.OUTPUT_DIR = os.path.join(self.tmp, "outputs")
+        server.SETTINGS_PATH = os.path.join(self.tmp, "settings.json")
 
     def tearDown(self):
-        server.BOOKS_DIR, server.OUTPUT_DIR, config = self._saved
+        server.BOOKS_DIR, server.OUTPUT_DIR, server.SETTINGS_PATH, config = self._saved
         server.CONFIG.clear()
         server.CONFIG.update(config)
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -103,10 +104,27 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("- Guard:", prompt)
         self.assertNotIn("- Patience:", prompt)  # lowercase "patience" is an ordinary word
 
-    def test_scene_then_characters_then_style(self):
+    def test_subject_then_scene_then_style(self):
         prompt = server.build_prompt("Oil paint", "The Hero waits.", "Hero: tall woman")
-        self.assertLess(prompt.index("Scene from the book"), prompt.index("Characters in this scene"))
-        self.assertLess(prompt.index("Characters in this scene"), prompt.index("Visual style"))
+        self.assertLess(prompt.index("Characters in this scene"), prompt.index("Scene from the book"))
+        self.assertLess(prompt.index("Scene from the book"), prompt.index("Visual style"))
+
+    def test_narrator_is_marked_and_listed_first(self):
+        chars = "Burrich: stablemaster\nFitz: teenage boy"
+        prompt = server.build_prompt("", "I ran past Burrich.", chars, narrator="Fitz")
+        self.assertIn("- Fitz (the narrator, the viewpoint character): teenage boy", prompt)
+        self.assertLess(prompt.index("- Fitz"), prompt.index("- Burrich"))
+
+    def test_scene_replaces_page_text_but_matching_uses_both(self):
+        chars = "Burrich: stablemaster\nGalen: duke"
+        prompt = server.build_prompt(
+            "", "Burrich rode out at dawn.", chars,
+            scene="A grey-haired stablemaster leads a horse out at dawn.",
+        )
+        self.assertIn("Scene from the book:\nA grey-haired stablemaster", prompt)
+        self.assertNotIn("rode out", prompt)
+        self.assertIn("- Burrich: stablemaster", prompt)  # matched on the page text
+        self.assertNotIn("- Galen:", prompt)
 
     def test_optional_sections_are_left_out_when_empty(self):
         prompt = server.build_prompt("", "A quiet forest.", "Hero: tall woman")
@@ -159,9 +177,10 @@ class GenerationTests(TempDirsMixin, unittest.TestCase):
     def test_prompt_and_settings_reach_comfy_and_image_is_saved(self):
         chars = "Hero: tall woman, red cloak\nGuard: old man with a spear\nOther: not in the scene"
         page = "The Hero crossed the bridge while the Guard watched."
-        name, prompt = server.generate_image(page, "Watercolour, muted colours.", chars)
+        name, prompt, seed = server.generate_image(page, "Watercolour, muted colours.", chars)
 
         sent = self.fake.state["received"][-1]["prompt"]
+        self.assertEqual(seed, sent["7"]["inputs"]["noise_seed"])
         self.assertEqual(sent["1"]["inputs"]["text"], prompt)
         self.assertIn("- Hero: tall woman, red cloak", prompt)
         self.assertIn("- Guard: old man with a spear", prompt)
@@ -174,7 +193,7 @@ class GenerationTests(TempDirsMixin, unittest.TestCase):
     def test_generation_works_without_websocket(self):
         # The fake has no /ws, so no progress listener starts.
         self.assertIsNone(server.start_progress_listener("cid", {}))
-        name, _ = server.generate_image("A quiet forest.", "", "")
+        name, _, _ = server.generate_image("A quiet forest.", "", "")
         self.assertTrue(name.endswith(".png"))
 
     def test_seed_changes_between_runs(self):
@@ -193,6 +212,9 @@ class GenerationTests(TempDirsMixin, unittest.TestCase):
 class ProgressTests(unittest.TestCase):
     def setUp(self):
         server.set_progress(active=True, label="", value=0, max=0)
+
+    def tearDown(self):
+        server.set_progress(active=False, label="", value=0, max=0)
 
     @staticmethod
     def text_frame(payload):
@@ -251,7 +273,7 @@ class HttpTests(TempDirsMixin, unittest.TestCase):
     def test_index_page_is_served(self):
         status, body = self.call("GET", "/")
         self.assertEqual(status, 200)
-        self.assertIn(b'id="book"', body)
+        self.assertIn(b'id="books"', body)
 
     def test_book_endpoints(self):
         status, body = self.call("GET", "/api/books")
@@ -268,6 +290,151 @@ class HttpTests(TempDirsMixin, unittest.TestCase):
         status, body = self.call("POST", "/api/generate", {"text": "A quiet forest.", "book": "missing"})
         self.assertEqual(status, 400)
         self.assertIn(b"Pick a book", body)
+
+
+class NarratorTests(unittest.TestCase):
+    def test_first_person_detected_outside_dialogue(self):
+        self.assertTrue(server.has_first_person("I walked on until the road ended."))
+        self.assertFalse(server.has_first_person('"Are you hurt?" Burrich asked the boy.'))
+        self.assertTrue(server.has_first_person('"Go," he said. My feet were already moving.'))
+
+    def test_narrator_listed_first_on_first_person_page(self):
+        chars = "Galen: duke\nFitz: teenage boy\nBurrich: stablemaster"
+        matched = server.characters_in_scene(chars, "I ran past Burrich.", narrator="Fitz")
+        self.assertEqual([n for n, _ in matched], ["Fitz", "Burrich"])
+
+    def test_narrator_left_out_of_third_person_page(self):
+        chars = "Fitz: teenage boy\nBurrich: stablemaster"
+        matched = server.characters_in_scene(chars, "Burrich watched the road.", narrator="Fitz")
+        self.assertEqual([n for n, _ in matched], ["Burrich"])
+
+    def test_narrator_named_in_third_person_page_is_included(self):
+        matched = server.characters_in_scene("Fitz: teenage boy", "Fitz watched the road.", narrator="Fitz")
+        self.assertEqual([n for n, _ in matched], ["Fitz"])
+
+
+class BookSafetyTests(TempDirsMixin, unittest.TestCase):
+    def test_copied_file_cannot_take_over_another_book(self):
+        server.save_book(dict(SAMPLE_BOOK))
+        # A copy keeps the original "id" inside but has its own file name.
+        with open(os.path.join(server.BOOKS_DIR, "mine.json"), "w", encoding="utf-8") as f:
+            json.dump(dict(SAMPLE_BOOK), f)
+        server.update_book("mine", {"visual_style": "Oil"})
+        self.assertEqual(server.load_book("test-book")["visual_style"], SAMPLE_BOOK["visual_style"])
+        self.assertEqual(server.load_book("mine")["visual_style"], "Oil")
+        self.assertIn("mine", [b["id"] for b in server.list_books()])
+
+    def test_corrupt_file_is_skipped_and_reported(self):
+        server.save_book(dict(SAMPLE_BOOK))
+        with open(os.path.join(server.BOOKS_DIR, "broken.json"), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.assertEqual([b["id"] for b in server.list_books()], ["test-book"])
+        with self.assertRaises(server.BookFileError):
+            server.load_book("broken")
+
+    def test_atomic_save_leaves_no_temp_file(self):
+        server.save_book(dict(SAMPLE_BOOK))
+        self.assertFalse([f for f in os.listdir(server.BOOKS_DIR) if f.endswith(".tmp")])
+
+    def test_narrator_round_trips(self):
+        server.save_book(dict(SAMPLE_BOOK))
+        server.update_book("test-book", {"narrator": " Hero "})
+        self.assertEqual(server.book_view(server.load_book("test-book"))["narrator"], "Hero")
+
+
+class RequestSafetyTests(TempDirsMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        server.save_book(dict(SAMPLE_BOOK))
+        self.app = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=self.app.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.app.server_address[1]}"
+
+    def tearDown(self):
+        self.app.shutdown()
+        self.app.server_close()
+        super().tearDown()
+
+    def request(self, method, path, data=None, headers=None):
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_text_plain_post_is_refused(self):
+        status = self.request("POST", "/api/books/test-book", b'{"visual_style":"x"}',
+                              {"Content-Type": "text/plain"})
+        self.assertEqual(status, 415)
+
+    def test_non_object_json_is_refused(self):
+        status = self.request("POST", "/api/books/test-book", b"[1, 2]",
+                              {"Content-Type": "application/json"})
+        self.assertEqual(status, 400)
+
+    def test_undecodable_body_is_refused(self):
+        status = self.request("POST", "/api/books/test-book", b"\xff\xfe\xfd",
+                              {"Content-Type": "application/json"})
+        self.assertEqual(status, 400)
+
+    def test_foreign_host_is_refused(self):
+        self.assertEqual(self.request("GET", "/api/books", headers={"Host": "evil.example"}), 403)
+
+    def test_own_host_is_served(self):
+        self.assertEqual(self.request("GET", "/api/books"), 200)
+
+    def test_corrupt_book_by_id_is_a_server_error(self):
+        with open(os.path.join(server.BOOKS_DIR, "broken.json"), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.assertEqual(self.request("GET", "/api/books/broken"), 500)
+
+
+class SettingsTests(TempDirsMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        server.save_book(dict(SAMPLE_BOOK))
+        self.app = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=self.app.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.app.server_address[1]}"
+
+    def tearDown(self):
+        self.app.shutdown()
+        self.app.server_close()
+        super().tearDown()
+
+    def call(self, method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.base + path, data=data, method=method,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_no_default_until_one_is_pinned(self):
+        self.assertEqual(self.call("GET", "/api/settings"), (200, {}))
+
+    def test_pin_is_saved_and_read_back(self):
+        self.assertEqual(self.call("POST", "/api/settings", {"default_book": "test-book"})[0], 200)
+        self.assertEqual(self.call("GET", "/api/settings")[1]["default_book"], "test-book")
+        self.assertTrue(os.path.exists(server.SETTINGS_PATH))
+
+    def test_unknown_book_cannot_be_pinned(self):
+        status, _ = self.call("POST", "/api/settings", {"default_book": "missing"})
+        self.assertEqual(status, 404)
+        self.assertNotIn("default_book", self.call("GET", "/api/settings")[1])
+
+    def test_empty_value_clears_the_default(self):
+        self.call("POST", "/api/settings", {"default_book": "test-book"})
+        self.call("POST", "/api/settings", {"default_book": ""})
+        self.assertEqual(self.call("GET", "/api/settings")[1]["default_book"], "")
+
+    def test_unreadable_settings_file_falls_back_to_defaults(self):
+        with open(server.SETTINGS_PATH, "w", encoding="utf-8") as f:
+            f.write("{broken")
+        self.assertEqual(self.call("GET", "/api/settings"), (200, {}))
 
 
 if __name__ == "__main__":
