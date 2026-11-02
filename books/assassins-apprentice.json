@@ -5,6 +5,68 @@
   "series": "Farseer Trilogy",
   "book_number": 1,
   "narrator": "Fitz",
+  "glossary": [
+    {
+      "term": "Forged",
+      "meaning": "people whose minds were broken by the Forging. Mindless and soulless, but living humans, not ghosts or undead. They move in clans and fight as trained soldiers.",
+      "visual": "pale, gaunt, dull-eyed, slack-faced, shabby clothes, stiff movements, blank expressions"
+    },
+    {
+      "term": "Forging",
+      "meaning": "the process that breaks a person's mind, leaving them Forged.",
+      "visual": "cold grey light, dark stone chamber, a slumped figure with empty eyes, sense of dread"
+    },
+    {
+      "term": "Skill",
+      "meaning": "the Farseer ability that lets a person send and receive thoughts mind-to-mind over distance.",
+      "visual": "a figure gone still with unfocused eyes, faint silvery shimmer around the head, dim firelight"
+    },
+    {
+      "term": "Wit",
+      "meaning": "an animal-bonding ability that lets a person share the senses and thoughts of an animal. Fitz is Wit-bonded to Nighteyes.",
+      "visual": "a man and a grey wolf with dark eyes locked in a shared gaze, heads close together, dim forest light"
+    },
+    {
+      "term": "Farseer",
+      "meaning": "the royal line of the Six Duchies, the family of the kings and princes, who carry the Skill.",
+      "visual": "gold and scarlet royal clothing, strong jaws, heavy brows, dark eyes, stern expressions"
+    },
+    {
+      "term": "Six Duchies",
+      "meaning": "the kingdom ruled by the Farseer kings, made up of six duchies, including Buck.",
+      "visual": "rolling farmland, stone roads, coastal towns and villages, royal banners"
+    },
+    {
+      "term": "Buckkeep",
+      "meaning": "the royal stronghold on the coast of Buck Duchy, seat of the Farseer kings.",
+      "visual": "massive grey stone keep on a sea-facing headland, tall towers, stone walls, grey sea and harbour below, banners on the battlements"
+    },
+    {
+      "term": "Mountain Kingdom",
+      "meaning": "a separate kingdom in the mountains, home of Kettricken's people.",
+      "visual": "snowy peaks, steep valleys, rough stone and timber halls, heavy wool and fur clothing"
+    },
+    {
+      "term": "Outislanders",
+      "meaning": "people from the Out Islands across the sea, who raid and trade with the Six Duchies.",
+      "visual": "weathered sea-raiders in leather and mail, round shields, wind-whipped cloaks"
+    },
+    {
+      "term": "Red-Ships",
+      "meaning": "the raiding longships of the Outislanders, with red sails, which attack the coasts of the Six Duchies.",
+      "visual": "longships with red sails on a grey sea, smoke over a coastal village, armoured raiders on the shore"
+    },
+    {
+      "term": "Bastard",
+      "meaning": "a child born outside marriage to a royal. Royal bastards take the Fitz prefix, as in FitzChivalry.",
+      "visual": "young man in plain working clothes, guarded expression, standing apart from nobles in a royal hall"
+    },
+    {
+      "term": "Assassin",
+      "meaning": "the king's secret killer. Chade is the king's assassin and trains Fitz in poisons, blades and disguise.",
+      "visual": "dark hooded cloak, shadowy corridor, a concealed knife, watchful and cautious stance"
+    }
+  ],
   "visual_style": "Classic fantasy book illustration, retro fantasy art, traditional fantasy novel cover art, high-fantasy aesthetic.\n\nClean inked outlines, distinct line art, finely drawn contours, graphic novel style.\n\nMuted and earthy color palette, cinematic lighting, warm ambient glow (especially from candles, torches, or hearth fires), soft directional shadows, painterly shading.\n\n1990s epic fantasy paperback style, nostalgic fantasy illustration, atmospheric and moody storybook art.\n\nMatte paper texture feel, subtle digital grain, clean digital painting with traditional ink-and-watercolor undertones.\n\nExpressive fantasy characters, historically-inspired rustic medieval clothing (tunics, rough leather, cloaks, simple leather boots), grounded and non-glamorous fantasy design.\n\nImmersive architectural details (rough stone walls, timber beams, medieval castle interiors or gritty coastal landscapes), lived-in and organic-looking spaces.",
   "characters": [
     {
@@ -13,7 +75,7 @@
     },
     {
       "name": "Molly",
-      "description": "young woman around fifteen, dark hair past her shoulders, plain blouse and red wool skirt"
+      "description": "young woman around seventeen, dark hair past her shoulders, plain blouse and red wool skirt"
     },
     {
       "name": "Burrich",
