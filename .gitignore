@@ -9,6 +9,7 @@ books/*.json
 !books/example-book.json
 !books/assassins-apprentice.json
 outputs/
+logs/
 books/*.tmp
 settings.json
 settings.json.tmp

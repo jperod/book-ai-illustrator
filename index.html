@@ -210,6 +210,46 @@
     border-radius: 6px;
   }
 
+  /* Timing chart and debug log, in the sidebar */
+  .timing { margin-top: 24px; }
+  .trow { margin-bottom: 9px; }
+  .tline {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .ttrack {
+    height: 5px;
+    background: var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 3px;
+  }
+  .tbar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    min-width: 2px;
+  }
+  .tmodel { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .tbar.llm { background: #5b7c99; }
+  .tbar.image { background: var(--accent); }
+  .tbar.app { background: var(--muted); }
+  .ttotal { font-size: 13px; font-weight: 600; margin-top: 4px; }
+  .logbox { margin-top: 24px; }
+  .logbox pre {
+    margin: 0;
+    max-height: 320px;
+    overflow: auto;
+    padding: 8px 10px;
+    font: 11px/1.4 ui-monospace, Consolas, monospace;
+    white-space: pre-wrap;
+    color: var(--muted);
+    border-top: 1px solid var(--line);
+  }
+
   /* Narrow screens: the book list moves above the page as a row of chips */
   @media (max-width: 760px) {
     .layout { grid-template-columns: 1fr; gap: 20px; }
@@ -224,6 +264,15 @@
   <aside class="sidebar">
     <h2>Books</h2>
     <nav id="books" aria-label="Books"></nav>
+    <section id="timing" class="timing" hidden>
+      <h2>Last image</h2>
+      <div id="timingRows"></div>
+      <div id="timingTotal" class="ttotal"></div>
+    </section>
+    <details id="logBox" class="logbox">
+      <summary>Debug log</summary>
+      <pre id="logText"></pre>
+    </details>
   </aside>
 
   <main class="content">
@@ -465,6 +514,68 @@
     }
   }
 
+  // Time breakdown of the last image, drawn as bars in the sidebar.
+  function renderTiming(timeline, total) {
+    const max = Math.max(0.01, ...timeline.map((s) => s.seconds));
+    $("timingRows").replaceChildren(...timeline.map((s) => {
+      const row = document.createElement("div");
+      row.className = "trow";
+      const line = document.createElement("div");
+      line.className = "tline";
+      const name = document.createElement("span");
+      name.textContent = s.stage;
+      const secs = document.createElement("span");
+      secs.textContent = `${s.seconds.toFixed(2)} s`;
+      line.append(name, secs);
+      // Names the model that ran this step: "LLM · qwen3:8b (GPU)" or "Image · flux-2-klein-4b-fp8...".
+      const model = document.createElement("div");
+      model.className = "tmodel";
+      const who = s.kind === "llm" ? "LLM" : s.kind === "image" ? "Image" : "";
+      model.textContent = [who, s.model].filter(Boolean).join(" · ");
+      const track = document.createElement("div");
+      track.className = "ttrack";
+      const bar = document.createElement("div");
+      bar.className = `tbar ${s.kind || "app"}`;
+      bar.style.width = `${((s.seconds / max) * 100).toFixed(1)}%`;
+      track.append(bar);
+      row.append(line, model, track);
+      return row;
+    }));
+    $("timingTotal").textContent = `Total ${total.toFixed(2)} s`;
+    $("timing").hidden = false;
+  }
+
+  // Debug log: streams from the server while the panel is open.
+  let logSeq = 0;
+  let logTimer = null;
+  async function pollLog() {
+    try {
+      const d = await (await fetch(`/api/log?after=${logSeq}`)).json();
+      if (!d.entries.length) return;
+      logSeq = d.last;
+      const pre = $("logText");
+      for (const e of d.entries) {
+        pre.textContent += `${e.time} ${e.level.padEnd(5)} ${e.msg}\n`;
+        const f = e.fields || {};
+        if (f.traceback) {
+          pre.textContent += f.traceback;
+        } else if (Object.keys(f).length) {
+          pre.textContent += `    ${JSON.stringify(f)}\n`;
+        }
+      }
+      pre.scrollTop = pre.scrollHeight;
+    } catch (err) {
+      /* the server is not reachable right now; the next poll tries again */
+    }
+  }
+  $("logBox").addEventListener("toggle", () => {
+    clearInterval(logTimer);
+    if ($("logBox").open) {
+      pollLog();
+      logTimer = setInterval(pollLog, 1000);
+    }
+  });
+
   async function generate() {
     // The button is disabled while a run is in progress; Ctrl+Enter must not bypass that.
     if (goBtn.disabled) return;
@@ -502,7 +613,10 @@
       promptText.textContent = data.prompt || "";
       promptBox.hidden = false;
       setBar(1, 1, "Done");
-      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+      const p = data.planner || {};
+      const who = p.used ? ` · planner ${p.seconds} s: ${p.present.join(", ") || "no one"}` : "";
+      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s${who}`);
+      renderTiming(data.timeline || [], data.total_seconds || 0);
     } catch (e) {
       $("progress").hidden = true;
       setStatus("Error: " + e.message, true);

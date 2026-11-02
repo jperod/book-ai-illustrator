@@ -3,7 +3,10 @@
 Ideas and open work for Book AI Illustrator, grouped by how soon they matter.
 
 ## Next: image accuracy
-- [ ] **LLM scene extraction.** Turn page prose into one short, visible scene before generating (Claude API, Haiku-class, under a cent per page; fall back to the plain page if it fails). Needs an API-key setting read from the environment, a privacy note in the README, and a `provider: off` default.
+- [x] **Scene planner.** Built with Qwen3 8B through Ollama, on the GPU (optional; see the README). Still to do: plan while the user types, so the wait is hidden.
+- [ ] **Glossary tests.** Add eval cases with glossary terms, and a glossary option in the benchmark, so terms are measured as well as names.
+- [ ] **Planner consistency.** The planner sometimes marks someone not visible while its scene describes them. Detect the mismatch and retry.
+- [ ] **Newer or larger models.** Test anything beyond 9B that fits, once the RAM and VRAM budget allows.
 - [ ] **Stronger age wording.** Fitz's description says "young man around fifteen", and the model still draws an adult. Try "teenage boy, about fifteen, slim, beardless" and check with the harness.
 - [ ] **Clean up character descriptions.** Remove "weathered" and "slight limp" from Burrich, and "about Burrich's age" from Galen, so no description depends on another character or invites an old look. Needs your wording approval.
 - [ ] **Several candidates per click.** Generate 2–4 seeds, show thumbnails, pick one, re-roll a seed, and keep a seed you like. The cheapest fix for glitches like the extra leg.

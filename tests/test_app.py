@@ -13,6 +13,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -75,7 +76,11 @@ class FakeComfy(BaseHTTPRequestHandler):
     def do_POST(self):
         state = self.server.state
         length = int(self.headers["Content-Length"])
-        state["received"].append(json.loads(self.rfile.read(length)))
+        body = json.loads(self.rfile.read(length))
+        if self.path.startswith("/free"):  # ComfyUI frees its models before the planner runs
+            self._send(200, b"{}")
+            return
+        state["received"].append(body)
         self._send(200, json.dumps({"prompt_id": state["prompt_id"], "number": 1}).encode())
 
 
@@ -84,13 +89,15 @@ class TempDirsMixin:
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="bi-test-")
-        self._saved = (server.BOOKS_DIR, server.OUTPUT_DIR, server.SETTINGS_PATH, dict(server.CONFIG))
+        self._saved = (server.BOOKS_DIR, server.OUTPUT_DIR, server.SETTINGS_PATH, server.LOG_PATH,
+                       dict(server.CONFIG))
         server.BOOKS_DIR = os.path.join(self.tmp, "books")
         server.OUTPUT_DIR = os.path.join(self.tmp, "outputs")
         server.SETTINGS_PATH = os.path.join(self.tmp, "settings.json")
+        server.LOG_PATH = os.path.join(self.tmp, "server.log")
 
     def tearDown(self):
-        server.BOOKS_DIR, server.OUTPUT_DIR, server.SETTINGS_PATH, config = self._saved
+        server.BOOKS_DIR, server.OUTPUT_DIR, server.SETTINGS_PATH, server.LOG_PATH, config = self._saved
         server.CONFIG.clear()
         server.CONFIG.update(config)
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -435,6 +442,215 @@ class SettingsTests(TempDirsMixin, unittest.TestCase):
         with open(server.SETTINGS_PATH, "w", encoding="utf-8") as f:
             f.write("{broken")
         self.assertEqual(self.call("GET", "/api/settings"), (200, {}))
+
+
+class FakeLLM(BaseHTTPRequestHandler):
+    """Stands in for Ollama: /api/chat returns a canned reply; anything else (unload) returns OK."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        state = self.server.state
+        length = int(self.headers["Content-Length"])
+        body = json.loads(self.rfile.read(length))
+        if self.path == "/api/chat":
+            state["received"].append(body)
+            out = json.dumps({"message": {"role": "assistant", "content": state["reply"]}}).encode()
+        else:
+            out = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+PLANNER_CHARS = "Fitz: teenage boy, dark hair\nPatience: calm woman\nSmithy: black terrier"
+PLANNER_GLOSSARY = [{"term": "Forged", "meaning": "mindless living humans", "visual": "dull-eyed, stiff"}]
+
+
+class PlannerTests(TempDirsMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.llm = ThreadingHTTPServer(("127.0.0.1", 0), FakeLLM)
+        self.llm.state = {"reply": "", "received": []}
+        threading.Thread(target=self.llm.serve_forever, daemon=True).start()
+        server.CONFIG.update(
+            llm_enabled=True,
+            llm_url=f"http://127.0.0.1:{self.llm.server_address[1]}",
+            llm_model="fake-planner",
+            llm_num_gpu=0,  # CPU here: no ComfyUI /free call in the tests
+            llm_timeout=5,
+            llm_keep_alive="1m",
+        )
+
+    def tearDown(self):
+        self.llm.shutdown()
+        self.llm.server_close()
+        super().tearDown()
+
+    def reply(self, checks, scene="Fitz walks a road at dusk."):
+        self.llm.state["reply"] = json.dumps({"checks": checks, "scene": scene})
+
+    def test_planner_picks_visible_characters(self):
+        self.reply([{"name": "Fitz", "visible_in_moment": True},
+                    {"name": "Patience", "visible_in_moment": True},
+                    {"name": "Smithy", "visible_in_moment": False}])
+        page = "I met Patience at the gate. Smithy was dead, and I thought of him."
+        plan = server.plan_scene(page, PLANNER_CHARS, "Fitz", [])
+        self.assertEqual(plan["present"], ["Fitz", "Patience"])
+        prompt = server.build_prompt("", page, PLANNER_CHARS, "Fitz", plan["scene"], plan["present"])
+        self.assertIn("- Fitz (the narrator, the viewpoint character)", prompt)
+        self.assertIn("- Patience", prompt)
+        self.assertNotIn("- Smithy", prompt)
+
+    def test_names_outside_the_candidates_are_ignored(self):
+        self.reply([{"name": "Fitz", "visible_in_moment": True}, {"name": "Bob", "visible_in_moment": True}])
+        plan = server.plan_scene("I walked on.", PLANNER_CHARS, "Fitz", [])
+        self.assertEqual(plan["present"], ["Fitz"])
+
+    def test_close_spelling_is_matched(self):
+        self.reply([{"name": "Patiance", "visible_in_moment": True}, {"name": "Fitz", "visible_in_moment": False}])
+        plan = server.plan_scene("I saw Patience at the gate.", PLANNER_CHARS, "Fitz", [])
+        self.assertEqual(plan["present"], ["Patience"])
+
+    def test_narrator_is_left_out_when_planner_says_so(self):
+        self.reply([{"name": "Fitz", "visible_in_moment": False}, {"name": "Patience", "visible_in_moment": True}])
+        plan = server.plan_scene("I heard Patience laugh.", PLANNER_CHARS, "Fitz", [])
+        self.assertEqual(plan["present"], ["Patience"])
+
+    def test_bad_replies_and_dead_server_fall_back_to_none(self):
+        self.llm.state["reply"] = "not json at all"
+        self.assertIsNone(server.plan_scene("I saw Patience.", PLANNER_CHARS, "Fitz", []))
+        self.llm.state["reply"] = json.dumps({"checks": "nope", "scene": ""})
+        self.assertIsNone(server.plan_scene("I saw Patience.", PLANNER_CHARS, "Fitz", []))
+        server.CONFIG["llm_url"] = "http://127.0.0.1:1"
+        self.assertIsNone(server.plan_scene("I saw Patience.", PLANNER_CHARS, "Fitz", []))
+
+    def test_disabled_planner_makes_no_calls(self):
+        server.CONFIG["llm_enabled"] = False
+        self.reply([{"name": "Fitz", "visible_in_moment": True}])
+        self.assertIsNone(server.plan_scene("I saw Patience.", PLANNER_CHARS, "Fitz", []))
+        self.assertEqual(self.llm.state["received"], [])
+
+    def test_no_names_means_no_planner_call(self):
+        self.reply([{"name": "Fitz", "visible_in_moment": True}])
+        self.assertIsNone(server.plan_scene("The road was long.", PLANNER_CHARS, "Fitz", []))
+        self.assertEqual(self.llm.state["received"], [])
+
+    def test_glossary_reaches_planner_and_image_notes(self):
+        self.reply([{"name": "Fitz", "visible_in_moment": True}],
+                   scene="Fitz faces a group of Forged ones in the road.")
+        page = "I rode on, past the Forged ones in the road."
+        plan = server.plan_scene(page, PLANNER_CHARS, "Fitz", PLANNER_GLOSSARY)
+        system = self.llm.state["received"][-1]["messages"][0]["content"]
+        self.assertIn("- Forged: mindless living humans", system)
+        self.assertEqual(plan["terms"], ["Forged"])
+        notes = [(g["term"], g["visual"]) for g in PLANNER_GLOSSARY]
+        prompt = server.build_prompt("", page, PLANNER_CHARS, "Fitz", plan["scene"], plan["present"], notes)
+        self.assertIn("Visual notes:\n- Forged: dull-eyed, stiff", prompt)
+
+    def test_explicit_present_list_overrides_name_matching(self):
+        prompt = server.build_prompt("", "Smithy barked at Patience.", PLANNER_CHARS, "", "", ["Patience"])
+        self.assertIn("- Patience", prompt)
+        self.assertNotIn("- Smithy", prompt)
+
+
+class LoggingAndTimingTests(TempDirsMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        server.save_book(dict(SAMPLE_BOOK))
+        self.app = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=self.app.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.app.server_address[1]}"
+        self.comfy = ThreadingHTTPServer(("127.0.0.1", 0), FakeComfy)
+        self.comfy.state = {"polls": 0, "prompt_id": "pid-t", "received": []}
+        threading.Thread(target=self.comfy.serve_forever, daemon=True).start()
+        server.CONFIG.update(comfy_url=f"http://127.0.0.1:{self.comfy.server_address[1]}",
+                             timeout_seconds=30, steps=4, width=512, height=512)
+
+    def tearDown(self):
+        for s in (self.app, self.comfy):
+            s.shutdown()
+            s.server_close()
+        super().tearDown()
+
+    def get(self, path):
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_log_entries_are_kept_and_served_after_a_sequence_number(self):
+        server.log("INFO", "first test line")
+        server.log("WARN", "second test line")
+        status, body = self.get("/api/log?after=0")
+        msgs = [e["msg"] for e in body["entries"]]
+        self.assertEqual(status, 200)
+        self.assertIn("first test line", msgs)
+        self.assertIn("second test line", msgs)
+        status, body = self.get(f"/api/log?after={body['last']}")
+        self.assertEqual(body["entries"], [])
+        with open(server.LOG_PATH, encoding="utf-8") as f:
+            self.assertIn("second test line", f.read())
+
+    def test_unexpected_error_is_logged_and_returned_as_json(self):
+        original = server.get_progress
+
+        def broken():
+            raise RuntimeError("boom for the test")
+
+        server.get_progress = broken
+        try:
+            status, body = self.get("/api/progress")
+        finally:
+            server.get_progress = original
+        self.assertEqual(status, 500)
+        self.assertIn("boom for the test", body["error"])
+        errors = [e for e in server.log_entries_after(0) if e["level"] == "ERROR"]
+        self.assertTrue(any("traceback" in e["fields"] for e in errors))
+
+    def test_generation_timeline_names_each_step(self):
+        timeline = []
+        server.generate_image("I walked the road.", "", "", "", "", None, None, timeline)
+        stages = [s["stage"] for s in timeline]
+        self.assertIn("Build workflow", stages)
+        self.assertIn("queue request", stages)
+        self.assertIn("queue wait and PNG save", stages)
+        image_steps = [s for s in timeline if s["kind"] == "image"]
+        self.assertTrue(image_steps and all(s["model"] for s in image_steps))
+        self.assertTrue(all(s["seconds"] >= 0 for s in timeline))
+
+    def test_listener_times_each_comfy_step(self):
+        listener = server.ProgressListener("cid", {"8": "SamplerCustomAdvanced", "9": "VAEDecode"})
+        listener._handle({"type": "executing", "data": {"node": "8"}})
+        time.sleep(0.05)
+        listener._handle({"type": "executing", "data": {"node": "9"}})
+        time.sleep(0.02)
+        totals = listener.finish_stages()
+        self.assertGreaterEqual(totals["Sampling"], 0.04)
+        self.assertGreaterEqual(totals["Decoding image"], 0.01)
+
+    def test_generate_endpoint_returns_timeline(self):
+        status, body = self.post("/api/generate", {
+            "text": "I walked the road at dusk.", "book": "test-book", "scene": "A road at dusk.",
+        })
+        self.assertEqual(status, 200)
+        stages = [s["stage"] for s in body["timeline"]]
+        self.assertIn("Save book", stages)
+        self.assertIn("queue request", stages)
+        self.assertGreater(body["total_seconds"], 0)
 
 
 if __name__ == "__main__":

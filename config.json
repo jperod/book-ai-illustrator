@@ -5,5 +5,7 @@
   "height": 1024,
   "timeout_seconds": 600,
   "open_browser": true,
-  "steps": 8
+  "steps": 8,
+  "llm_enabled": true,
+  "llm_model": "qwen3:8b"
 }
