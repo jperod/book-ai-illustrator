@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Personal data: your books and the images they produce.
+# Only the example book is tracked.
+books/*.json
+!books/example-book.json
+outputs/
+
+# Logs and local runtime files
+*.log
+*.err
+
+# Editors and OS files
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

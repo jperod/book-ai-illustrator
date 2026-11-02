@@ -1,0 +1,3 @@
+# Normalize line endings in the repo; Windows checkouts get CRLF for batch files.
+* text=auto
+*.bat text eol=crlf

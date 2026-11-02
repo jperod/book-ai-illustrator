@@ -1,0 +1,9 @@
+{
+  "comfy_url": "http://127.0.0.1:8188",
+  "port": 8000,
+  "width": 1024,
+  "height": 1024,
+  "timeout_seconds": 600,
+  "open_browser": true,
+  "steps": 8
+}

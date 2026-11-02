@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book Illustrator</title>
+<style>
+  :root {
+    --bg: #f7f5f1;
+    --panel: #ffffff;
+    --text: #22201c;
+    --muted: #77716a;
+    --line: #dcd6cb;
+    --accent: #2f2a24;
+    --accent-text: #ffffff;
+    --error: #a2302b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141310;
+      --panel: #1d1c19;
+      --text: #e9e6df;
+      --muted: #8f8a80;
+      --line: #34322d;
+      --accent: #e9e6df;
+      --accent-text: #141310;
+      --error: #f08a80;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 16px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  select, textarea {
+    width: 100%;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px;
+    font: inherit;
+  }
+  select { padding: 10px 12px; }
+  textarea { resize: vertical; }
+  textarea:focus, select:focus { outline: 1px solid var(--muted); }
+  #text { min-height: 240px; }
+
+  details {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+  }
+  summary {
+    cursor: pointer;
+    padding: 10px 12px;
+    color: var(--muted);
+    user-select: none;
+  }
+  details[open] summary { border-bottom: 1px solid var(--line); }
+  details textarea {
+    border: 0;
+    border-radius: 0 0 6px 6px;
+    min-height: 180px;
+  }
+  details textarea:focus { outline: none; }
+
+  button {
+    align-self: flex-start;
+    background: var(--accent);
+    color: var(--accent-text);
+    border: 0;
+    border-radius: 6px;
+    padding: 10px 22px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: progress; }
+
+  #progress { display: flex; flex-direction: column; gap: 6px; }
+  #bar {
+    position: relative;
+    height: 6px;
+    background: var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  #fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.3s;
+  }
+  #bar.indeterminate #fill {
+    width: 35%;
+    transition: none;
+    animation: slide 1.2s linear infinite;
+  }
+  @keyframes slide {
+    from { left: -35%; }
+    to { left: 100%; }
+  }
+  #stage { color: var(--muted); font-size: 13px; }
+
+  #status {
+    color: var(--muted);
+    font-size: 13px;
+    min-height: 1.2em;
+    white-space: pre-wrap;
+  }
+  #status.error { color: var(--error); }
+
+  #result img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <select id="book" aria-label="Book"></select>
+
+  <textarea id="text" placeholder="Paste a page of the book here"></textarea>
+
+  <details id="styleBox">
+    <summary>Visual style</summary>
+    <textarea id="style" placeholder="Art style, palette, lighting, mood…"></textarea>
+  </details>
+
+  <details id="charsBox">
+    <summary>Characters</summary>
+    <textarea id="characters" placeholder="One per line, name first:&#10;Hero: tall, dark hair, grey wool cloak&#10;Companion: small white dog, red collar"></textarea>
+  </details>
+
+  <button id="go">Generate</button>
+  <div id="progress" hidden>
+    <div id="bar"><div id="fill"></div></div>
+    <div id="stage"></div>
+  </div>
+  <div id="status"></div>
+  <div id="result"></div>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const bookEl = $("book");
+  const textEl = $("text");
+  const styleEl = $("style");
+  const charsEl = $("characters");
+  const styleBox = $("styleBox");
+  const charsBox = $("charsBox");
+  const goBtn = $("go");
+  const statusEl = $("status");
+  const resultEl = $("result");
+  let currentBook = "";
+
+  function setStatus(msg, isError = false) {
+    statusEl.textContent = msg;
+    statusEl.classList.toggle("error", isError);
+  }
+
+  function setBar(value, max, label) {
+    const bar = $("bar");
+    const fill = $("fill");
+    if (max > 0) {
+      bar.classList.remove("indeterminate");
+      fill.style.width = Math.min(100, (value / max) * 100) + "%";
+    } else {
+      bar.classList.add("indeterminate");
+      fill.style.width = "";
+    }
+    $("stage").textContent = label;
+  }
+
+  async function pollProgress() {
+    try {
+      const p = await (await fetch("/api/progress")).json();
+      if (!p.active) return;
+      const label = (p.label || "Working") + (p.max > 0 ? ` — step ${p.value} of ${p.max}` : "");
+      setBar(p.value, p.max, label);
+    } catch (e) { /* ignore a missed poll */ }
+  }
+
+  async function loadBooks() {
+    try {
+      const books = await (await fetch("/api/books")).json();
+      bookEl.replaceChildren(...books.map((b) => {
+        const opt = document.createElement("option");
+        opt.value = b.id;
+        opt.textContent = `${b.title} (${b.series}, book ${b.book_number})`;
+        return opt;
+      }));
+      if (books.length) await selectBook(books[0].id);
+      else setStatus("No books found in the books folder.", true);
+    } catch (e) {
+      setStatus("The local server is not responding.", true);
+    }
+  }
+
+  async function selectBook(id) {
+    try {
+      const b = await (await fetch(`/api/books/${encodeURIComponent(id)}`)).json();
+      currentBook = id;
+      bookEl.value = id;
+      styleEl.value = b.visual_style || "";
+      charsEl.value = b.characters_text || "";
+      // Open each box only when it is empty.
+      styleBox.open = !styleEl.value.trim();
+      charsBox.open = !charsEl.value.trim();
+    } catch (e) {
+      setStatus("Could not load that book.", true);
+    }
+  }
+
+  bookEl.addEventListener("change", () => selectBook(bookEl.value));
+
+  // Save a field to the book it was typed in, shortly after typing stops.
+  function autosave(el, field) {
+    let timer = null;
+    el.addEventListener("input", () => {
+      const bookId = currentBook;
+      const value = el.value;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!bookId) return;
+        fetch(`/api/books/${encodeURIComponent(bookId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: value }),
+        }).catch(() => {});
+      }, 800);
+    });
+  }
+  autosave(styleEl, "visual_style");
+  autosave(charsEl, "characters_text");
+
+  async function checkStatus() {
+    try {
+      const s = await (await fetch("/api/status")).json();
+      if (!s.comfy_ok) setStatus(`ComfyUI is not running (${s.comfy_url}). Start it first.`, true);
+      else if (!s.workflow_ok) setStatus("workflow_api.json is missing. See README.md.", true);
+    } catch (e) {
+      setStatus("The local server is not responding.", true);
+    }
+  }
+
+  async function generate() {
+    const text = textEl.value.trim();
+    if (!text) {
+      setStatus("Paste some text first.", true);
+      textEl.focus();
+      return;
+    }
+    goBtn.disabled = true;
+    $("progress").hidden = false;
+    setBar(0, 0, "Starting…");
+    const poll = setInterval(pollProgress, 300);
+    setStatus("");
+    const started = performance.now();
+    try {
+      const r = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          book: currentBook,
+          visual_style: styleEl.value,
+          characters_text: charsEl.value,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+
+      const img = document.createElement("img");
+      img.alt = "Illustration";
+      img.src = data.image_url + "?t=" + Date.now();
+      resultEl.replaceChildren(img);
+      setBar(1, 1, "Done");
+      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+    } catch (e) {
+      $("progress").hidden = true;
+      setStatus("Error: " + e.message, true);
+    } finally {
+      clearInterval(poll);
+      goBtn.disabled = false;
+    }
+  }
+
+  goBtn.addEventListener("click", generate);
+  textEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) generate();
+  });
+
+  loadBooks();
+  checkStatus();
+</script>
+</body>
+</html>

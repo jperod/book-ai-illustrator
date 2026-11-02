@@ -1,0 +1,18 @@
+{
+  "id": "example-book",
+  "title": "Example Book",
+  "author": "Author Name",
+  "series": "",
+  "book_number": 1,
+  "visual_style": "Watercolor and ink, muted earth tones, soft directional light, painterly texture.",
+  "characters": [
+    {
+      "name": "Mara",
+      "description": "young woman, short dark hair, green travelling cloak, leather boots"
+    },
+    {
+      "name": "Tomas",
+      "description": "older man with a grey beard, broad shoulders, patched brown coat"
+    }
+  ]
+}
