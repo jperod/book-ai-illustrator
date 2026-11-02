@@ -12,8 +12,6 @@ outputs/
 *.log
 *.err
 
-# Editors and OS files
+# Editors
 .vscode/
 .idea/
-Thumbs.db
-desktop.ini

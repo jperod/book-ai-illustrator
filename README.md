@@ -1,59 +1,72 @@
 # Book AI Illustrator
 
-Paste a page of a book and get an illustration of it, rendered on your own PC. Nothing is sent to the cloud, and there is no per-image cost.
+Paste a page of a book and get an illustration of it, generated locally on your own GPU. No cloud service and no per-image cost.
 
-The app is a small local web page in front of [ComfyUI](https://github.com/Comfy-Org/ComfyUI), which runs the [FLUX.2 Klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8) model on an 8 GB NVIDIA GPU.
+The app is a small web page in front of [ComfyUI](https://github.com/comfyanonymous/ComfyUI), which runs the [FLUX.2 Klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8) image model.
 
-The hard parts are speed on consumer hardware and keeping characters looking the same from one page to the next. This project is a working attempt at both.
+The hard parts are speed on consumer hardware and keeping characters looking the same from one page to the next. This project is an attempt at both.
 
 ## Features
 
-- Paste a page, click Generate, get an image. On an RTX 4060 Ti (8 GB) that takes roughly 10–25 seconds, depending on the step count and whether the models are already loaded.
-- Each book is a data file with its own visual style and character descriptions.
+- Paste a page, click Generate. On an 8 GB NVIDIA card (RTX 4060 Ti) an image takes roughly 10–25 seconds, depending on the step count and whether the models are already loaded.
+- Each book is a JSON file with its own visual style and character descriptions.
 - A character's description is added to the prompt only when that character's name appears in the page.
-- A live progress bar driven by ComfyUI: loading, sampling step by step, decoding, saving.
-- Python standard library only. Nothing to `pip install`.
+- Live progress from ComfyUI: loading, sampling step by step, decoding, saving.
+- The app itself uses only the Python standard library. Nothing to install with pip.
 
 ## Requirements
 
-- Windows 10 or 11 (`run.bat` is Windows-only; `server.py` is plain Python)
-- An NVIDIA GPU with 8 GB of VRAM or more
-- Python 3.10 or newer (developed on 3.12)
+- Linux with an NVIDIA GPU (8 GB of VRAM or more) and a working driver
+- Python 3.10 or newer, `git`, and `curl`
 - About 13 GB of disk space for ComfyUI and the models
 
 ## Setup
 
 ### 1. Install ComfyUI
 
-Download `ComfyUI_windows_portable_nvidia.7z` from the [ComfyUI releases](https://github.com/Comfy-Org/ComfyUI/releases) and extract it. Run `run_nvidia_gpu.bat` once to check that it starts, then close it.
+Clone ComfyUI and follow its README to install it, choosing the PyTorch build that matches your CUDA version:
+
+```bash
+git clone https://github.com/comfyanonymous/ComfyUI.git
+cd ComfyUI
+```
+
+Check that it starts with `python3 main.py`, then stop it again.
 
 ### 2. Download the models
 
-Put these three files into the ComfyUI folder:
+From the ComfyUI folder:
 
-| File | Put it in `ComfyUI\models\` | Download |
-|---|---|---|
-| `flux-2-klein-4b-fp8.safetensors` (about 4 GB) | `diffusion_models` | [link](https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors) |
-| `qwen_3_4b.safetensors` (about 8 GB) | `text_encoders` | [link](https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors) |
-| `flux2-vae.safetensors` (about 0.3 GB) | `vae` | [link](https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/vae/flux2-vae.safetensors) |
+```bash
+mkdir -p models/diffusion_models models/text_encoders models/vae
 
-This repository does not include model files.
+curl -L -o models/diffusion_models/flux-2-klein-4b-fp8.safetensors \
+  https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors
+
+curl -L -o models/text_encoders/qwen_3_4b.safetensors \
+  https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors
+
+curl -L -o models/vae/flux2-vae.safetensors \
+  https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/vae/flux2-vae.safetensors
+```
+
+The downloads are about 4 GB, 8 GB and 0.3 GB. This repository does not include model files.
 
 ### 3. Get the app
 
-```
+```bash
 git clone https://github.com/jperod/book-ai-illustrator.git
 cd book-ai-illustrator
 ```
 
 ### 4. Add your books
 
-Copy `books/example-book.json` to `books/<your-book>.json` and edit it. Book files are git-ignored on purpose: they hold your own notes, and character descriptions for copyrighted books should stay out of a public repository.
+Copy `books/example-book.json` to `books/<your-book>.json` and edit it. Book files are git-ignored on purpose. They hold your own notes, and character descriptions from copyrighted books should stay out of a public repository.
 
 ## Running
 
-1. Start ComfyUI (`run_nvidia_gpu.bat` in its folder) and wait until it has finished loading.
-2. Run `run.bat` in this folder. The app opens at http://127.0.0.1:8000.
+1. Start ComfyUI with `python3 main.py` in its folder, and wait until it reports that it is running.
+2. In this folder, run `python3 server.py`. The app opens at http://127.0.0.1:8000, or open that address yourself.
 3. Pick a book, paste a page, and click Generate. Images are saved in `outputs/`.
 
 ## Book files
@@ -77,7 +90,7 @@ Each book is one JSON file in `books/`:
 - `visual_style` is added to every prompt for that book.
 - A character is added to a prompt only if their name appears in the pasted text. Matching is case-sensitive, so a lowercase "patience" does not pull in a character named Patience.
 - Edits to the Visual style and Characters boxes are saved back to the book file.
-- The book `id` must use only lowercase letters, digits and hyphens. It is also the file name.
+- The book `id` may use only lowercase letters, digits and hyphens. It is also the file name.
 
 ## Configuration
 
@@ -101,16 +114,16 @@ workflow_api.json   FLUX.2 Klein 4B text-to-image graph in ComfyUI's API format
 config.json         settings
 books/              one JSON file per book (your own books are git-ignored)
 tests/              tests that use a fake ComfyUI, so no GPU is needed
-run.bat             starts the app and opens the browser (Windows)
+outputs/            generated images (git-ignored, created on first run)
 ```
 
 ## Tests
 
-```
-python -m unittest discover -s tests -v
+```bash
+python3 -m unittest discover -s tests -v
 ```
 
-The tests use a fake ComfyUI and temporary folders. They don't need a GPU, and they don't touch your books or outputs.
+The tests use a fake ComfyUI and temporary folders. They don't need a GPU, and they don't touch your books or outputs. They pass on Python 3.12.
 
 ## Roadmap
 
@@ -123,7 +136,7 @@ Ideas, not built yet:
 
 ## Credits and licenses
 
-- [ComfyUI](https://github.com/Comfy-Org/ComfyUI) runs the models. See its repository for its license.
+- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) runs the models. See its repository for its license.
 - [FLUX.2 Klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8) by Black Forest Labs, Apache 2.0.
 - The text encoder and VAE are repackaged by [Comfy-Org](https://huggingface.co/Comfy-Org/flux2-klein-4B), Apache 2.0.
 
