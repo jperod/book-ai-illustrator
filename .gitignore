@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.pyc
+.venv/
 
 # Personal data: books and the images they produce.
 # New books are ignored by default. Track one by adding a "!books/<file>.json" line.
@@ -8,6 +9,10 @@ books/*.json
 !books/example-book.json
 !books/assassins-apprentice.json
 outputs/
+books/*.tmp
+settings.json
+settings.json.tmp
+eval/local/
 
 # Logs and local runtime files
 *.log
@@ -16,3 +21,6 @@ outputs/
 # Editors
 .vscode/
 .idea/
+
+#debug files
+.debug

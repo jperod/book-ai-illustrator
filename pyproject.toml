@@ -1,0 +1,15 @@
+[project]
+name = "book-ai-illustrator"
+version = "0.1.0"
+description = "Paste a book page and get a local AI illustration, using ComfyUI and FLUX.2 Klein."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "jperod" }]
+requires-python = ">=3.10"
+# The app uses only the Python standard library.
+dependencies = []
+
+[tool.uv]
+# An application, not a library: nothing is built or installed as a package.
+# Run it with `uv run python server.py`.
+package = false

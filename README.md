@@ -16,9 +16,13 @@ The hard parts are speed on consumer hardware and keeping characters looking the
 
 ## Requirements
 
-- Linux with an NVIDIA GPU (8 GB of VRAM or more) and a working driver
-- Python 3.10 or newer, `git`, and `curl`
+- An NVIDIA GPU with 8 GB of VRAM or more, and a working driver
+- [uv](https://docs.astral.sh/uv/), which installs the Python version this project needs
+- `git` and `curl`
 - About 13 GB of disk space for ComfyUI and the models
+
+The app runs on Linux and Windows. The `uv` commands below are the same in either system.
+The download commands in step 2 use bash syntax, so on Windows run them in Git Bash or WSL.
 
 ## Setup
 
@@ -57,6 +61,15 @@ The downloads are about 4 GB, 8 GB and 0.3 GB. This repository does not include 
 ```bash
 git clone https://github.com/jperod/book-ai-illustrator.git
 cd book-ai-illustrator
+uv sync
+```
+
+`uv sync` creates the project environment in `.venv/` and uses the Python version from `.python-version`. The app itself has no dependencies.
+
+If you use both Windows and WSL on the same folder, keep their environments apart by giving WSL its own location:
+
+```bash
+UV_PROJECT_ENVIRONMENT=~/.venvs/book-illustrator uv sync
 ```
 
 ### 4. Add your books
@@ -68,7 +81,7 @@ The repository includes `books/assassins-apprentice.json` as a worked example: a
 ## Running
 
 1. Start ComfyUI with `python3 main.py` in its folder, and wait until it reports that it is running.
-2. In this folder, run `python3 server.py`. The app opens at http://127.0.0.1:8000, or open that address yourself.
+2. In this folder, run `uv run python server.py`. The app opens at http://127.0.0.1:8000, or open that address yourself.
 3. Pick a book, paste a page, and click Generate. Images are saved in `outputs/`.
 
 ## Book files
@@ -114,6 +127,9 @@ server.py           local web server, ComfyUI client, prompt builder, progress r
 index.html          the page (one file, no build step)
 workflow_api.json   FLUX.2 Klein 4B text-to-image graph in ComfyUI's API format
 config.json         settings
+pyproject.toml      project metadata; uv reads it
+uv.lock             locked environment (no dependencies)
+.python-version     Python version used by uv
 books/              one JSON file per book (new books are git-ignored unless listed in .gitignore)
 tests/              tests that use a fake ComfyUI, so no GPU is needed
 outputs/            generated images (git-ignored, created on first run)
@@ -122,7 +138,7 @@ outputs/            generated images (git-ignored, created on first run)
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 The tests use a fake ComfyUI and temporary folders. They don't need a GPU, and they don't touch your books or outputs. They pass on Python 3.12.
