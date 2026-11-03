@@ -8,7 +8,18 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import planner  # noqa: E402
+import planner_prompts  # noqa: E402
 import server  # noqa: E402
+
+
+class ModularPlannerTests(unittest.TestCase):
+    def test_direct_imports_match_server_exports(self):
+        self.assertIs(planner.setting_line, server.setting_line)
+        self.assertIs(planner.cast_text, server.cast_text)
+        self.assertIs(planner.plan_from_request, server.plan_from_request)
+        self.assertIs(planner_prompts.PLANNER_SYSTEM, server.PLANNER_SYSTEM)
+        self.assertIs(planner_prompts.PLANNER_SCHEMA, server.PLANNER_SCHEMA)
 
 
 class SettingLineTests(unittest.TestCase):

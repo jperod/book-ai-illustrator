@@ -83,7 +83,17 @@ class StructuralLintTests(unittest.TestCase):
 class GenericCodeTests(unittest.TestCase):
     """The code must stay generic: no character names from any book, and no text-pattern rules."""
 
-    CODE = ("server.py", "prompting.py", "bible.py", "index.html")
+    CODE = (
+        "server.py",
+        "prompting.py",
+        "bible.py",
+        "index.html",
+        "config.py",
+        "planner.py",
+        "planner_prompts.py",
+        "comfy.py",
+        "storage.py",
+    )
 
     def read(self, name):
         with open(os.path.join(ROOT, name), encoding="utf-8") as f:
@@ -102,7 +112,16 @@ class GenericCodeTests(unittest.TestCase):
             self.assertEqual(found, [], f"{code} mentions book characters: {found}")
 
     def test_only_the_book_id_check_is_a_pattern(self):
-        for code in ("server.py", "prompting.py", "bible.py"):
+        for code in (
+            "server.py",
+            "prompting.py",
+            "bible.py",
+            "config.py",
+            "planner.py",
+            "planner_prompts.py",
+            "comfy.py",
+            "storage.py",
+        ):
             compiled = re.findall(r"^(\w+)\s*=\s*re\.compile", self.read(code), re.MULTILINE)
             self.assertLessEqual(set(compiled), {"BOOK_ID_RE"}, f"{code} defines text patterns: {compiled}")
 

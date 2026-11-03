@@ -19,7 +19,17 @@ extend-exclude = ["eval/local", "eval/runs", "outputs", "logs"]
 select = ["E", "W", "F", "I", "B", "UP", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["bible", "prompting", "server", "common"]
+known-first-party = [
+    "bible",
+    "comfy",
+    "common",
+    "config",
+    "planner",
+    "planner_prompts",
+    "prompting",
+    "server",
+    "storage",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests and eval scripts put the project folder on sys.path before importing it.
