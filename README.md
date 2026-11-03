@@ -214,6 +214,20 @@ uv run python -m unittest discover -s tests -v
 
 The tests use a fake ComfyUI, a fake Ollama and temporary folders. They don't need a GPU or Ollama, and they don't touch your books or outputs. They pass on Python 3.12.
 
+## Linting and pre-commit hooks
+
+[Ruff](https://docs.astral.sh/ruff/) checks and formats the code, and [pre-commit](https://pre-commit.com/) runs it, plus basic file checks, before each commit. Both are dev dependencies, so the same versions run on Linux and Windows.
+
+```bash
+uv sync                              # installs ruff and pre-commit
+uv run pre-commit install            # once per clone: run the hooks on every commit
+uv run pre-commit run --all-files    # run every hook by hand
+uv run ruff check --fix              # lint only
+uv run ruff format                   # format only
+```
+
+Ruff's settings are in `pyproject.toml`; the hooks are in `.pre-commit-config.yaml`.
+
 ## Roadmap
 
 The full list is in [TODO.md](TODO.md). The next items include:

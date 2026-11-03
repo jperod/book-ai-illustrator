@@ -9,7 +9,30 @@ requires-python = ">=3.10"
 # The app uses only the Python standard library.
 dependencies = []
 
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["eval/local", "eval/runs", "outputs", "logs"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, import order, bugbear, pyupgrade, simplify.
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bible", "prompting", "server", "common"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and eval scripts put the project folder on sys.path before importing it.
+"tests/*" = ["E402"]
+"eval/*" = ["E402"]
+
 [tool.uv]
 # An application, not a library: nothing is built or installed as a package.
 # Run it with `uv run python server.py`.
 package = false
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "ruff>=0.17.3",
+]
