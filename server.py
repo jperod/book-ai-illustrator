@@ -4,9 +4,11 @@ Standard library only. ComfyUI must be running separately (default
 http://127.0.0.1:8188) and workflow_api.json must exist next to this file.
 See README.md for the one-time setup.
 """
+
 import base64
 import collections
-import difflib
+import contextlib
+import hashlib
 import itertools
 import json
 import os
@@ -14,6 +16,7 @@ import random
 import re
 import socket
 import struct
+import subprocess
 import threading
 import time
 import traceback
@@ -24,6 +27,9 @@ import uuid
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from bible import facts, lint_book, normalise_book
+from prompting import PROMPT_VERSION, build_prompt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -48,6 +54,7 @@ CONFIG = {
     "llm_timeout": 60,
     "llm_num_gpu": 99,
     "llm_keep_alive": "2m",
+    "planner_validate": True,  # a second LLM call reviews and fixes the planner's scene (see review_scene)
 }
 
 MAX_BODY_BYTES = 1_000_000  # largest request body the server accepts
@@ -63,8 +70,13 @@ LOG_SEQ = itertools.count(1)
 def log(level, message, **fields):
     """Records one event. Never raises: logging must not break a request."""
     try:
-        entry = {"seq": next(LOG_SEQ), "time": datetime.now().strftime("%H:%M:%S.%f")[:-3],
-                 "level": level, "msg": message, "fields": fields}
+        entry = {
+            "seq": next(LOG_SEQ),
+            "time": datetime.now().strftime("%H:%M:%S.%f")[:-3],
+            "level": level,
+            "msg": message,
+            "fields": fields,
+        }
         line = f"{entry['time']} {level:<5} {message}"
         if fields:
             line += " " + json.dumps(fields, ensure_ascii=False, default=str)
@@ -130,6 +142,7 @@ def workflow_models(workflow):
             models["vae"] = str(inputs.get("vae_name", ""))
     return models
 
+
 # One generation at a time: the GPU can only do one well.
 GENERATE_LOCK = threading.Lock()
 
@@ -138,13 +151,20 @@ def load_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, encoding="utf-8") as f:
             CONFIG.update(json.load(f))
+    # Overrides for test instances (e.g. the golden-set runs) that must not touch the main server.
+    if os.environ.get("BOOK_ILLUSTRATOR_PORT"):
+        CONFIG["port"] = int(os.environ["BOOK_ILLUSTRATOR_PORT"])
+    if os.environ.get("BOOK_ILLUSTRATOR_NO_BROWSER"):
+        CONFIG["open_browser"] = False
 
 
 # ---------- visual identity (style box) ----------
 
 # ---------- books: each book file holds its own visual style and characters ----------
-# books/<id>.json looks like:
-#   {"id", "title", "author", "series", "book_number", "visual_style", "characters": [{"name", "description"}]}
+# books/<id>.json looks like (schema 2; see bible.py for every character field):
+#   {"id", "schema_version": 2, "title", "author", "series", "book_number", "visual_style", "narrator",
+#    "characters": [{"name", "aliases", "kind", "sex", "age", "species", "look"}], "glossary": [...]}
+# visual_style is the style the picture prompt uses; any other keys (notes, longer drafts) are kept as they are.
 
 BOOK_ID_RE = re.compile(r"^[a-z0-9-]+$")
 
@@ -160,6 +180,7 @@ class BookFileError(Exception):
 
 
 def load_book(book_id):
+    """The book, normalised to the current shape (see bible.normalise_book). Everything downstream relies on it."""
     path = book_file(book_id)
     if not os.path.exists(path):
         raise FileNotFoundError(book_id)
@@ -172,11 +193,21 @@ def load_book(book_id):
         raise BookFileError(f"{book_id}.json does not contain a JSON object")
     # The file name is the book's id, so a copied file cannot take over another book.
     book["id"] = book_id
-    return book
+    return normalise_book(book)
 
 
 BOOK_WRITE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
+
+
+def write_json_atomic(path, obj, lock=None):
+    """Writes JSON to a temp file, then replaces the target, so a crash never leaves half a file."""
+    tmp = path + ".tmp"
+    with lock or threading.Lock():
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, path)
 
 
 def read_settings():
@@ -193,24 +224,13 @@ def read_settings():
 
 
 def write_settings(settings):
-    tmp = SETTINGS_PATH + ".tmp"
-    with SETTINGS_LOCK:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, SETTINGS_PATH)
+    write_json_atomic(SETTINGS_PATH, settings, SETTINGS_LOCK)
 
 
 def save_book(book):
-    """Writes books/<id>.json atomically (temp file, then replace)."""
-    target = book_file(book["id"])
+    """Writes books/<id>.json atomically."""
     os.makedirs(BOOKS_DIR, exist_ok=True)
-    tmp = target + ".tmp"
-    with BOOK_WRITE_LOCK:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(book, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(tmp, target)
+    write_json_atomic(book_file(book["id"]), book, BOOK_WRITE_LOCK)
 
 
 def list_books():
@@ -223,28 +243,22 @@ def list_books():
             try:
                 with open(os.path.join(BOOKS_DIR, fn), encoding="utf-8") as f:
                     b = json.load(f)
-                books.append({
-                    "id": stem,
-                    "title": str(b.get("title", stem)),
-                    "author": str(b.get("author", "")),
-                    "series": str(b.get("series", "")),
-                    "book_number": int(b.get("book_number", 0) or 0),
-                })
+                books.append(
+                    {
+                        "id": stem,
+                        "title": str(b.get("title", stem)),
+                        "author": str(b.get("author", "")),
+                        "series": str(b.get("series", "")),
+                        "book_number": int(b.get("book_number", 0) or 0),
+                    }
+                )
             except (OSError, ValueError, TypeError, AttributeError) as e:
                 print(f"Skipping unreadable book file {fn}: {e}")
     return sorted(books, key=lambda b: (b["series"], b["book_number"], b["title"]))
 
 
-def characters_to_text(characters):
-    return "\n".join(f"{c['name']}: {c['description']}" for c in characters)
-
-
-def text_to_characters(text):
-    # Lines without a 'Name: description' shape are dropped on save.
-    return [{"name": n, "description": d} for n, d in parse_characters(text)]
-
-
 def book_view(book):
+    """What the page needs: the book's fields, characters, glossary and its structural problems."""
     return {
         "id": book["id"],
         "title": book.get("title", book["id"]),
@@ -252,149 +266,172 @@ def book_view(book):
         "series": book.get("series", ""),
         "book_number": book.get("book_number", 0),
         "visual_style": book.get("visual_style", ""),
-        "visual_style_short": book.get("visual_style_short", ""),
         "narrator": book.get("narrator", ""),
-        "characters_text": characters_to_text(book.get("characters", [])),
+        "characters": book["characters"],
+        "glossary": book["glossary"],
+        "problems": lint_book(book),
     }
 
 
 def update_book(book_id, fields):
-    """Applies any of visual_style / characters_text that are present, saves, and returns the book."""
+    """Applies whichever of visual_style, narrator, characters (a list) and glossary (a list) are present,
+    saves, and returns the book."""
     book = load_book(book_id)
     if "visual_style" in fields:
         book["visual_style"] = str(fields["visual_style"])
-    if "visual_style_short" in fields:
-        book["visual_style_short"] = str(fields["visual_style_short"])
-    if "characters_text" in fields:
-        book["characters"] = text_to_characters(str(fields["characters_text"]))
+    if isinstance(fields.get("characters"), list):
+        book["characters"] = fields["characters"]
+    if isinstance(fields.get("glossary"), list):
+        book["glossary"] = fields["glossary"]
     if "narrator" in fields:
         book["narrator"] = str(fields["narrator"]).strip()
+    book = normalise_book(book)
     save_book(book)
     return book
 
 
-SINGLE_IMAGE_NOTE = "A single painting of one continuous scene filling the whole canvas, edge to edge."
-
-
-def parse_characters(characters_text):
-    """One character per line, 'Name: description'. Returns a list of (name, description)."""
-    chars = []
-    for line in characters_text.splitlines():
-        if ":" not in line:
-            continue
-        name, desc = (part.strip() for part in line.split(":", 1))
-        if name and desc:
-            chars.append((name, desc))
-    return chars
-
-
-def name_in_text(name, text):
-    # Case-sensitive on purpose: "patience", "regal" or "fool" in lowercase are ordinary words.
-    return re.search(r"\b" + re.escape(name) + r"\b", text) is not None
-
-
-# First-person narration: "I" (capital only, so the letter does not match inside words),
-# and me/my/mine/myself in any case. Quoted dialogue is removed before this is checked.
-FIRST_PERSON_RE = re.compile(r"\bI\b|\b(?i:me|my|mine|myself)\b")
-QUOTE_RE = re.compile(r'"[^"]*"|“[^”]*”')
-
-
-def has_first_person(text):
-    """True if the narration (dialogue removed) is written in the first person."""
-    return FIRST_PERSON_RE.search(QUOTE_RE.sub(" ", text)) is not None
-
-
-def characters_in_scene(characters_text, scene_text, narrator="", present=None):
-    """With present=None: characters named in the text, plus the narrator when the text is first
-    person. With present (from the planner): exactly those characters. The narrator is listed first."""
-    chars = parse_characters(characters_text)
-    if present is not None:
-        wanted = {p.lower() for p in present}
-        chosen = [c for c in chars if c[0].lower() in wanted]
-        return sorted(chosen, key=lambda c: c[0] != narrator)
-    narrator_entry = [c for c in chars if narrator and c[0] == narrator]
-    others = [c for c in chars if not (narrator and c[0] == narrator) and name_in_text(c[0], scene_text)]
-    narrator_present = bool(narrator_entry) and (has_first_person(scene_text) or name_in_text(narrator, scene_text))
-    return (narrator_entry if narrator_present else []) + others
-
-
-def build_prompt(style, text, characters_text="", narrator="", scene="", present=None, glossary_notes=None):
-    # Subject first: who is in the picture, then the scene, then the style.
-    # `text` is the pasted page and is used for name matching. `scene`, when given,
-    # replaces the page text in the prompt itself. `present` (from the planner) fixes who is shown.
-    matching_text = text.strip() + "\n" + scene.strip()
-    scene_text = scene.strip() or text.strip()
-    parts = [SINGLE_IMAGE_NOTE]
-    chars = characters_in_scene(characters_text, matching_text, narrator, present)
-    if chars:
-        parts += ["", "Characters in this scene (keep their appearance consistent):"]
-        for name, desc in chars:
-            tag = " (the narrator, the viewpoint character)" if narrator and name == narrator else ""
-            parts.append(f"- {name}{tag}: {desc}")
-    if glossary_notes:
-        parts += ["", "Visual notes:"] + [f"- {term}: {visual}" for term, visual in glossary_notes]
-    parts += ["", "Scene from the book:", scene_text]
-    if style.strip():
-        parts += ["", f"Visual style: {style.strip()}"]
-    return "\n".join(parts)
-
-
 # ---------- scene planner (local LLM through Ollama) ----------
-# The planner decides which candidate characters are visible in one moment and writes a short
-# visual scene. It runs only when llm_enabled is true. Any problem gives None, and the app falls
-# back to name matching and the pasted page as before.
-
-FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$")
+# The planner reads the page with the book's whole cast and glossary, and decides who is visible in one
+# moment, which glossary terms it shows, where it happens, and writes a short visual scene. A second short
+# call (the reviewer) checks that scene and fixes it. All content judgements are made by the LLM: there are
+# no word lists or text patterns in this code. Every example uses invented names. It runs only when
+# llm_enabled is true; any failure gives None, and the app uses the pasted page with no character list.
 
 PLANNER_SYSTEM = (
     "You plan one illustration for a page of a novel. Choose ONE moment from the page: the most visual one. "
-    'For EVERY allowed name, write a "checks" entry with "visible_in_moment": true only if that person is '
-    "physically in the picture in that moment. Someone who is only remembered, mentioned, avoided, absent, "
-    'dead or spoken about is false. Then write "scene": at most 50 words of concrete visible detail '
-    "(poses, setting, which hand holds each prop). No thoughts or backstory. Refer to people by name, never "
-    'as "I". Only the visible people appear in the scene. Copy every name exactly as written in the allowed '
-    "list. A person who is elsewhere, avoids the narrator, left, or is only spoken about is "
-    "visible_in_moment false, even if the page mentions them in the same passage."
+    "You get the book's cast. For every cast member the page refers to in any way (by name, by another name, "
+    'by "he" or "she", or as the narrator "I"), write a "checks" entry with "visible_in_moment": true only if '
+    "that person or animal is physically in the picture in that moment. Someone who is only remembered, "
+    "mentioned, avoided, absent, dead or spoken about is false. Leave out cast members the page does not refer "
+    'to. Copy every name exactly as written in the cast. "terms": the glossary terms whose thing is visible in '
+    'the moment. "setting": "place" (a short phrase the page gives, or "unknown"), "indoors" ("yes", "no", or '
+    '"unknown" when the page does not say) and "time" (for example "dusk", or "unknown"); do not guess a place '
+    'the page does not give. "scene": at most 50 words of concrete visible detail: poses, setting, which hand '
+    'holds each prop. Refer to people by name, never as "I". Only the visible cast appears in the scene and no '
+    "one else. When two people are visible, write one sentence per person and name who does what to whom; do "
+    "not use a pronoun that could mean either of them. No thoughts or backstory."
 )
-# One synthetic example, with invented names, shown before the real request.
-PLANNER_FEW_SHOT_USER = (
-    'Allowed names: Mara (narrator, "I"), Orrin, Bel, Corran\n'
-    "Page:\nI waited at the gate while Orrin argued with the guard. Bel had left us two days ago, "
-    "and I still missed her voice. Corran had ridden off to the coast at dawn. "
-    "Orrin finally stepped aside, laughing at something the guard had said."
-)
-PLANNER_FEW_SHOT_ASSISTANT = json.dumps({
-    "checks": [
-        {"name": "Mara", "visible_in_moment": True},
-        {"name": "Orrin", "visible_in_moment": True},
-        {"name": "Bel", "visible_in_moment": False},
-        {"name": "Corran", "visible_in_moment": False},
-    ],
-    "scene": "Mara waits by a stone gate. Orrin, arms folded, argues with a guard in a grey tabard, "
-             "then steps aside, laughing.",
-})
+
+# Two synthetic examples with invented names, shown before the real request.
+PLANNER_FEW_SHOT = [
+    (
+        'Cast:\n- Lira (narrator, "I"; female, young adult)\n- Orrin (male, adult)\n- Bel (female, adult)\n'
+        "- Corran (male, adult)\n- Tess (female, child)\nGlossary terms: none\n"
+        "Page:\nI waited at the gate while Orrin argued with the guard. Bel had left us two days ago, "
+        "and I still missed her voice. Corran had ridden off to the coast at dawn. "
+        "Orrin finally stepped aside, laughing at something the guard had said.",
+        {
+            "checks": [
+                {"name": "Lira", "visible_in_moment": True},
+                {"name": "Orrin", "visible_in_moment": True},
+                {"name": "Bel", "visible_in_moment": False},
+                {"name": "Corran", "visible_in_moment": False},
+            ],
+            "terms": [],
+            "setting": {"place": "a stone gate by a road", "indoors": "no", "time": "unknown"},
+            "scene": "Lira waits by a stone gate. Orrin, arms folded, stands beside Lira, laughing.",
+        },
+    ),
+    (
+        'Cast:\n- Ren (narrator, "I"; male, teen)\n- Ama (female, adult)\n- Koll (wolf)\nGlossary terms: none\n'
+        "Page:\nI lay by the fire, too weak to sit up. Ama knelt beside me and held the water skin to my lips.",
+        {
+            "checks": [
+                {"name": "Ren", "visible_in_moment": True},
+                {"name": "Ama", "visible_in_moment": True},
+            ],
+            "terms": [],
+            "setting": {"place": "beside a campfire", "indoors": "unknown", "time": "unknown"},
+            "scene": "Ren lies on a blanket beside a fire, head on a rolled cloak. Ama kneels beside Ren and "
+            "holds a water skin to Ren's lips.",
+        },
+    ),
+]
+
+SETTING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "place": {"type": "string"},
+        "indoors": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "time": {"type": "string"},
+    },
+    "required": ["place", "indoors", "time"],
+}
+
 PLANNER_SCHEMA = {
     "type": "object",
     "properties": {
-        "checks": {"type": "array", "items": {
-            "type": "object",
-            "properties": {"name": {"type": "string"}, "visible_in_moment": {"type": "boolean"}},
-            "required": ["name", "visible_in_moment"],
-        }},
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}, "visible_in_moment": {"type": "boolean"}},
+                "required": ["name", "visible_in_moment"],
+            },
+        },
+        "terms": {"type": "array", "items": {"type": "string"}},
+        "setting": SETTING_SCHEMA,
         "scene": {"type": "string"},
     },
-    "required": ["checks", "scene"],
+    "required": ["checks", "terms", "setting", "scene"],
 }
 
+REVIEW_SYSTEM = (
+    "You check a short scene description that will be drawn as one picture. Rules: (1) every visible person "
+    "is named and does something; (2) no other person, figure or crowd appears; (3) no pronoun could mean "
+    "either of two visible people: write the name instead; (4) nothing contradicts the setting (no indoor "
+    "objects outdoors, no sky or landscape indoors); (5) each person has one pose; (6) at most 60 words, "
+    'complete sentences. Answer "ok": true if all rules hold. Otherwise list the "problems" and give a fixed '
+    '"scene" that keeps the same moment and follows every rule. If the scene is already fine, return an '
+    'empty "scene".'
+)
+REVIEW_FEW_SHOT = [
+    (
+        "Visible: Ren, Ama\nSetting: beside a campfire\n"
+        "Scene: Ren lies by the fire. Ama kneels and holds the water skin to his lips while a stranger watches.",
+        {
+            "ok": False,
+            "problems": ["'his' could mean Ren or Ama", "a stranger is not visible in this moment"],
+            "scene": "Ren lies by the fire. Ama kneels and holds the water skin to Ren's lips.",
+        },
+    ),
+]
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ok": {"type": "boolean"},
+        "problems": {"type": "array", "items": {"type": "string"}},
+        "scene": {"type": "string"},
+    },
+    "required": ["ok", "problems", "scene"],
+}
 
-def candidate_names(text, chars, narrator):
-    """Names the planner may choose from: names found in the page, plus the narrator when the
-    narration is first person."""
-    names = [n for n, _ in chars if name_in_text(n, text)]
-    known = [n for n, _ in chars]
-    if narrator and narrator in known and narrator not in names and has_first_person(text):
-        names.append(narrator)
-    return names
+BOOK_REVIEW_SYSTEM = (
+    "You review the setup of a book for an illustration app. The JSON gives the visual style, the cast and the "
+    "glossary. Find problems that would make pictures wrong: a look that contradicts the character's sex, age "
+    "or kind; a character described only by reference to another character; a style text that names places, "
+    "objects, light sources or scene content (it pulls every picture toward them) or words that invite "
+    "lettering such as cover, poster or title; a glossary visual note that describes a named character; "
+    "missing details the pictures need. Report only real problems, each with the field it is about."
+)
+BOOK_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "problems": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "level": {"type": "string", "enum": ["error", "warning"]},
+                    "field": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+                "required": ["level", "field", "message"],
+            },
+        }
+    },
+    "required": ["problems"],
+}
 
 
 def ollama_post(path, payload, timeout):
@@ -412,10 +449,8 @@ def llm_release():
     """Unload the planner model so its VRAM is free for ComfyUI."""
     if not CONFIG.get("llm_enabled"):
         return
-    try:
+    with contextlib.suppress(Exception):
         ollama_post("/api/generate", {"model": CONFIG["llm_model"], "keep_alive": 0}, timeout=30)
-    except Exception:
-        pass
 
 
 def free_comfy_gpu():
@@ -433,75 +468,197 @@ def free_comfy_gpu():
         pass
 
 
-def plan_scene(text, characters_text, narrator, glossary):
-    """Returns {"present", "scene", "seconds", "terms"}, or None. Never raises."""
-    if not CONFIG.get("llm_enabled"):
-        return None
+def setting_line(setting):
+    """'open road, outdoors, daytime' from the planner's setting object. Unknown parts are left out."""
+    if not isinstance(setting, dict):
+        return ""
+    parts = [str(setting.get("place", "")).strip()]
+    if setting.get("indoors") == "yes":
+        parts.append("indoors")
+    elif setting.get("indoors") == "no":
+        parts.append("outdoors")
+    parts.append(str(setting.get("time", "")).strip())
+    return ", ".join(p for p in parts if p and p.lower() != "unknown")
+
+
+def llm_json(system, examples, user, schema, num_predict=300):
+    """One chat call that must answer with JSON matching `schema`. Examples are (user, answer) pairs.
+    Returns (raw Ollama reply, parsed object, seconds)."""
+    messages = [{"role": "system", "content": system}]
+    for example_user, example_answer in examples:
+        messages.append({"role": "user", "content": example_user})
+        messages.append({"role": "assistant", "content": json.dumps(example_answer)})
+    messages.append({"role": "user", "content": user})
+    t0 = time.perf_counter()
+    data = ollama_post(
+        "/api/chat",
+        {
+            "model": CONFIG["llm_model"],
+            "stream": False,
+            "think": False,
+            "keep_alive": CONFIG["llm_keep_alive"],
+            "messages": messages,
+            "format": schema,
+            "options": {
+                "temperature": 0,
+                "num_ctx": 4096,
+                "num_predict": num_predict,
+                "num_gpu": CONFIG["llm_num_gpu"],
+            },
+        },
+        timeout=CONFIG["llm_timeout"],
+    )
+    seconds = round(time.perf_counter() - t0, 2)
+    return data, json.loads(data["message"]["content"]), seconds
+
+
+def planner_schema(names, terms):
+    """PLANNER_SCHEMA with the book's own names and glossary terms as the only allowed values, so the
+    model cannot invent or misspell a name."""
+    schema = json.loads(json.dumps(PLANNER_SCHEMA))
+    if names:
+        schema["properties"]["checks"]["items"]["properties"]["name"]["enum"] = names
+    if terms:
+        schema["properties"]["terms"]["items"]["enum"] = terms
+    return schema
+
+
+def cast_text(characters, narrator, glossary):
+    """The cast and glossary terms as the planner reads them, from the book's own fields (bible.facts)."""
+    lines = ["Cast:"]
+    for c in characters:
+        tags = ['narrator, "I"'] if narrator and c["name"] == narrator else []
+        tags += [t for t in (facts(c), "also called " + ", ".join(c["aliases"]) if c["aliases"] else "") if t]
+        lines.append(f"- {c['name']} ({'; '.join(tags)})" if tags else f"- {c['name']}")
+    if len(lines) == 1:
+        lines.append("- none")
+    terms = [g["term"] for g in glossary]
+    lines.append("Glossary terms: " + (", ".join(terms) if terms else "none"))
+    return "\n".join(lines)
+
+
+def review_scene(scene, present, setting):
+    """The reviewer call. Returns (ok, problems, fixed scene or "", seconds)."""
+    user = (
+        f"Visible: {', '.join(present) if present else 'nobody'}\n"
+        f"Setting: {setting_line(setting) or 'unknown'}\nScene: {scene}"
+    )
+    _, obj, seconds = llm_json(REVIEW_SYSTEM, REVIEW_FEW_SHOT, user, REVIEW_SCHEMA, num_predict=260)
+    problems = [str(p) for p in obj.get("problems", []) if str(p).strip()]
+    return bool(obj.get("ok")), problems, str(obj.get("scene", "")).strip(), seconds
+
+
+def plan_scene(text, characters, narrator, glossary):
+    """Returns {"present", "scene", "setting", "terms", "seconds", "timings", "review"}, or None. Never raises.
+    `characters` and `glossary` come from load_book (already normalised). With planner_validate on, the
+    reviewer checks the scene; its fixed scene is used, and with no usable fix the scene is left empty, so the
+    page text is drawn with the planner's people and setting."""
+    if not CONFIG.get("llm_enabled") or not (characters or glossary):
+        return None  # nothing for the planner to decide
     try:
-        chars = parse_characters(characters_text)
-        names = candidate_names(text, chars, narrator)
-        terms = [g for g in glossary if g.get("term") and name_in_text(g["term"], text)]
-        if not names:
-            return None  # nothing to decide, so no planner call
+        alias_of = {}
+        for c in characters:
+            for label in [c["name"]] + c["aliases"]:
+                alias_of[label] = c["name"]
+        term_names = [g["term"] for g in glossary]
         system = PLANNER_SYSTEM
-        if terms:
+        meanings = [g for g in glossary if g.get("meaning")]
+        if meanings:
             system += "\n\nGlossary (use these meanings, do not invent others):\n" + "\n".join(
-                f"- {g['term']}: {g.get('meaning', '')}" for g in terms)
-
-        def tag(name):
-            return f'{name} (narrator, "I")' if narrator and name == narrator else name
-
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": PLANNER_FEW_SHOT_USER},
-            {"role": "assistant", "content": PLANNER_FEW_SHOT_ASSISTANT},
-            {"role": "user", "content": "Allowed names: " + ", ".join(tag(n) for n in names) + "\nPage:\n" + text},
-        ]
+                f"- {g['term']}: {g['meaning']}" for g in meanings
+            )
         t_free = time.perf_counter()
         if CONFIG["llm_num_gpu"] > 0:
             free_comfy_gpu()
         free_s = time.perf_counter() - t_free
-        t0 = time.perf_counter()
-        data = ollama_post("/api/chat", {
-            "model": CONFIG["llm_model"], "stream": False, "think": False,
-            "keep_alive": CONFIG["llm_keep_alive"], "messages": messages, "format": PLANNER_SCHEMA,
-            "options": {"temperature": 0, "num_ctx": 2048, "num_predict": 260,
-                        "num_gpu": CONFIG["llm_num_gpu"]},
-        }, timeout=CONFIG["llm_timeout"])
-        seconds = round(time.perf_counter() - t0, 2)
-        obj = json.loads(FENCE_RE.sub("", data["message"]["content"].strip()))
+        data, obj, seconds = llm_json(
+            system,
+            PLANNER_FEW_SHOT,
+            cast_text(characters, narrator, glossary) + "\nPage:\n" + text,
+            planner_schema(list(alias_of), term_names),
+        )
         checks, scene = obj.get("checks"), obj.get("scene")
-        if not isinstance(checks, list) or not isinstance(scene, str) or not scene.strip():
+        if (
+            not isinstance(checks, list)
+            or not isinstance(scene, str)
+            or not scene.strip()
+            or not all(isinstance(c, dict) and isinstance(c.get("visible_in_moment"), bool) for c in checks)
+        ):
             log("WARN", "planner reply rejected: wrong shape", reply=str(data["message"]["content"])[:300])
             return None
-        known = {n.lower(): n for n in names}
         present = []
         for c in checks:
-            if not (isinstance(c, dict) and isinstance(c.get("name"), str)
-                    and isinstance(c.get("visible_in_moment"), bool)):
-                return None
-            key = c["name"].strip().lower()
-            if key not in known:  # a close spelling counts, e.g. "Patiance" for "Patience"
-                close = difflib.get_close_matches(key, list(known), n=1, cutoff=0.75)
-                key = close[0] if close else key
-            if key in known and c["visible_in_moment"] and known[key] not in present:
-                present.append(known[key])
+            name = alias_of.get(c.get("name"))
+            if c["visible_in_moment"] and name and name not in present:
+                present.append(name)
+        terms = [t for t in term_names if t in (obj.get("terms") or [])]
+        setting = obj.get("setting") if isinstance(obj.get("setting"), dict) else {}
+        scene = scene.strip()
+        review = {"used": False}
+        review_s = 0.0
+        if CONFIG.get("planner_validate"):
+            t_review = time.perf_counter()
+            try:
+                ok, problems, fixed, review_s = review_scene(scene, present, setting)
+            except Exception as e:  # a failed review keeps the planner's scene rather than losing the plan
+                review_s = round(time.perf_counter() - t_review, 2)
+                log("WARN", "scene review failed; keeping the planner's scene", error=str(e))
+                ok, problems, fixed = True, [], ""
+            review = {"used": True, "ok": ok, "problems": problems}
+            if not ok:
+                scene = fixed  # empty when the reviewer could not fix it: the page text is drawn instead
+            log("INFO", "scene review", ok=ok, problems=problems, fixed=bool(fixed), seconds=review_s)
         timings = {
             "free_comfy": round(free_s, 2),
             "load": round(data.get("load_duration", 0) / 1e9, 2),
             "prompt": round(data.get("prompt_eval_duration", 0) / 1e9, 2),
             "generate": round(data.get("eval_duration", 0) / 1e9, 2),
             "wall": seconds,
+            "review": review_s,
         }
-        log("INFO", "planner done", present=present, terms=[g["term"] for g in terms], **timings)
-        return {"present": present, "scene": " ".join(scene.split()[:60]), "seconds": seconds,
-                "timings": timings, "terms": [g["term"] for g in terms]}
+        log("INFO", "planner done", present=present, terms=terms, setting=setting_line(setting), **timings)
+        return {
+            "present": present,
+            "scene": " ".join(scene.split()[:60]),
+            "setting": setting_line(setting),
+            "terms": terms,
+            "seconds": round(seconds + review_s, 2),
+            "timings": timings,
+            "review": review,
+        }
     except Exception as e:
-        log("ERROR", "planner failed; using name matching", error=str(e), traceback=traceback.format_exc())
+        log("ERROR", "planner failed; using the page", error=str(e), traceback=traceback.format_exc())
         return None
 
 
+def review_book(book):
+    """Asks the LLM to read the book's setup and list content problems. Returns [{level, message}]."""
+    payload = {
+        "visual_style": book.get("visual_style", ""),
+        "narrator": book.get("narrator", ""),
+        "characters": book["characters"],
+        "glossary": book["glossary"],
+    }
+    _, obj, _ = llm_json(
+        BOOK_REVIEW_SYSTEM, [], json.dumps(payload, ensure_ascii=False), BOOK_REVIEW_SCHEMA, num_predict=900
+    )
+    out = []
+    for p in obj.get("problems", []):
+        if isinstance(p, dict) and str(p.get("message", "")).strip():
+            level = p.get("level") if p.get("level") in ("error", "warning") else "warning"
+            field = str(p.get("field", "")).strip()
+            out.append(
+                {
+                    "level": level,
+                    "message": (f"{field}: " if field else "") + str(p["message"]).strip(),
+                    "source": "review",
+                }
+            )
+    return out
+
+
 # ---------- workflow handling ----------
+
 
 def is_text_prompt_node(node):
     class_type = str(node.get("class_type", ""))
@@ -509,7 +666,7 @@ def is_text_prompt_node(node):
     return ("TextEncode" in class_type or "CLIPText" in class_type) and isinstance(inputs.get("text"), str)
 
 
-def make_workflow(prompt_text):
+def make_workflow(prompt_text, seed=None):
     """Load the exported ComfyUI workflow (API format) and fill in prompt, seed and size."""
     if not os.path.exists(WORKFLOW_PATH):
         raise RuntimeError(
@@ -531,7 +688,7 @@ def make_workflow(prompt_text):
 
         for key in ("seed", "noise_seed"):
             if isinstance(inputs.get(key), int):
-                inputs[key] = random.randint(0, 2**32 - 1)
+                inputs[key] = seed if seed is not None else random.randint(0, 2**32 - 1)
 
         # Size lives on the latent node and on the scheduler (Flux2Scheduler uses it for sigmas).
         if isinstance(inputs.get("width"), int) and isinstance(inputs.get("height"), int):
@@ -549,6 +706,7 @@ def make_workflow(prompt_text):
 
 
 # ---------- ComfyUI HTTP API ----------
+
 
 def comfy_url(path):
     return CONFIG["comfy_url"].rstrip("/") + path
@@ -571,7 +729,7 @@ def comfy_post_json(path, payload):
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"ComfyUI rejected the workflow (HTTP {e.code}): {detail[:1500]}")
+        raise RuntimeError(f"ComfyUI rejected the workflow (HTTP {e.code}): {detail[:1500]}") from e
 
 
 def comfy_available():
@@ -637,14 +795,16 @@ class ProgressListener(threading.Thread):
         port = parsed.port or 80
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock = socket.create_connection((host, port), timeout=5)
-        self.sock.sendall((
-            f"GET /ws?clientId={self.client_id} HTTP/1.1\r\n"
-            f"Host: {host}:{port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n"
-        ).encode())
+        self.sock.sendall(
+            (
+                f"GET /ws?clientId={self.client_id} HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode()
+        )
         head = self._read_until(b"\r\n\r\n")
         if b" 101 " not in head.split(b"\r\n", 1)[0]:
             raise ConnectionError("ComfyUI websocket handshake failed")
@@ -672,10 +832,8 @@ class ProgressListener(threading.Thread):
             while not self.stop_event.is_set():
                 opcode, payload = self._read_frame()
                 if opcode == 0x1:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._handle(json.loads(payload))
-                    except Exception:
-                        pass
                 elif opcode == 0x9:
                     self._send_frame(0xA, payload)
                 elif opcode == 0x8:
@@ -688,10 +846,8 @@ class ProgressListener(threading.Thread):
 
     def close(self):
         if self.sock is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self.sock.close()
-            except OSError:
-                pass
 
     def _handle(self, msg):
         kind = msg.get("type")
@@ -721,9 +877,9 @@ class ProgressListener(threading.Thread):
         while len(self.buffer) < n:
             try:
                 chunk = self.sock.recv(65536)
-            except socket.timeout:
+            except TimeoutError:
                 if self.stop_event.is_set():
-                    raise ConnectionError("listener stopped")
+                    raise ConnectionError("listener stopped") from None
                 continue
             if not chunk:
                 raise ConnectionError("websocket closed")
@@ -771,18 +927,134 @@ def start_progress_listener(client_id, node_types):
     return listener
 
 
-def generate_image(text, style, characters_text="", narrator="", scene="", present=None, glossary_notes=None,
-                   timeline=None):
-    """Run the workflow on ComfyUI, wait for it, save the PNG. Returns (filename, prompt, seed).
-    If a timeline list is given, the time spent in each step is appended to it."""
+EMPTY_PLAN = {"scene": "", "present": [], "setting": "", "terms": []}
+
+
+def plan_from_request(plan):
+    """A plan in the shape plan_scene returns ({scene, present, setting, terms}), checked. None if not a dict.
+    Used for eval variants and for a re-roll's saved plan. An empty scene means the page text is drawn."""
+    if not isinstance(plan, dict):
+        return None
+    present = plan.get("present")
+    terms = plan.get("terms")
+    return {
+        "scene": str(plan.get("scene") or "").strip(),
+        "present": [str(p) for p in present] if isinstance(present, list) else [],
+        "setting": str(plan.get("setting") or ""),
+        "terms": [str(t) for t in terms] if isinstance(terms, list) else [],
+    }
+
+
+def sidecar_path(image_name):
+    """outputs/<image>.json for an image this app saved, or None for any other name."""
+    name = os.path.basename(str(image_name or ""))
+    if name != image_name or not name.endswith(".png"):
+        return None
+    return os.path.join(OUTPUT_DIR, name[: -len(".png")] + ".json")
+
+
+def read_saved_plan(image_name):
+    """The plan saved with an earlier image (its sidecar), so a re-roll draws the same moment."""
+    path = sidecar_path(image_name)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return plan_from_request(json.load(f).get("plan"))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def write_sidecar(image_name, record):
+    """Writes outputs/<image>.json next to the picture: what made it, so any image can be traced or re-made."""
+    write_json_atomic(sidecar_path(image_name), record)
+
+
+def _number(text):
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def gpu_snapshot():
+    """GPU clock, temperature, memory, power and load from nvidia-smi, or None when it is not available.
+    Used to see whether a slow image came from the GPU running slow (heat, power, other apps)."""
+    try:
+        out = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=clocks.sm,clocks.max.sm,temperature.gpu,memory.used,memory.total,"
+                "power.draw,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    values = [v.strip() for v in out.stdout.strip().splitlines()[0].split(",")]
+    keys = ("clock_mhz", "clock_max_mhz", "temp_c", "vram_used_mb", "vram_total_mb", "power_w", "gpu_util_pct")
+    return {key: _number(value) for key, value in zip(keys, values, strict=False)}
+
+
+def decide_scene(body, text, book, characters, timeline):
+    """What to draw: (plan, source, planner info). Sources, in order: an eval variant, the saved plan of an
+    earlier image (a re-roll), or the planner; a scene typed by the user replaces only the planner's scene.
+    Without a planner answer the plan is empty and the page text is drawn with no character list."""
+    variant = body.get("variant")
+    if isinstance(variant, dict) and ("scene" in variant or "present" in variant):
+        return plan_from_request(variant), "variant", {"used": False}
+    if body.get("from_image"):
+        saved = read_saved_plan(body["from_image"])
+        if saved:
+            return saved, "saved", {"used": False}
     t = time.perf_counter()
-    prompt_text = build_prompt(style, text, characters_text, narrator, scene, present, glossary_notes)
-    workflow = make_workflow(prompt_text)
+    planned = plan_scene(text, characters, book.get("narrator", ""), book["glossary"])
+    wall = time.perf_counter() - t
+    llm = f"{CONFIG['llm_model']} ({'GPU' if CONFIG['llm_num_gpu'] > 0 else 'CPU'})"
+    if planned:
+        tm = planned["timings"]
+        add_stage(timeline, "unload ComfyUI models for the LLM", tm["free_comfy"], kind="image", model="ComfyUI")
+        add_stage(timeline, "load model", tm["load"], kind="llm", model=llm)
+        add_stage(timeline, "read page and write scene", tm["prompt"] + tm["generate"], kind="llm", model=llm)
+        if tm["review"]:
+            add_stage(timeline, "review scene", tm["review"], kind="llm", model=llm)
+        add_stage(timeline, "HTTP and parsing", wall - tm["wall"] - tm["review"], kind="llm", model=llm)
+    elif CONFIG.get("llm_enabled"):
+        add_stage(timeline, "no result (page text used)", wall, kind="llm", model=llm)
+    info = {
+        "used": bool(planned),
+        "called": CONFIG.get("llm_enabled", False),
+        "seconds": planned["seconds"] if planned else None,
+        "review": planned["review"] if planned else {"used": False},
+    }
+    plan = plan_from_request(planned) if planned else dict(EMPTY_PLAN)
+    typed = str(body.get("scene", "")).strip()
+    if typed:
+        plan["scene"] = typed
+        return plan, "typed", info
+    return plan, "planner" if planned else "page", info
+
+
+def generate_image(prompt_text, timeline=None, seed=None):
+    """Run the workflow on ComfyUI with this prompt, wait for it, save the PNG. Returns (filename, prompt, seed).
+    If a timeline list is given, the time spent in each step is appended to it. A fixed seed makes a run
+    repeatable."""
+    t = time.perf_counter()
+    workflow = make_workflow(prompt_text, seed)
     add_stage(timeline, "Build workflow", time.perf_counter() - t)
     models = workflow_models(workflow)
     seed = next(
-        (n["inputs"]["noise_seed"] for n in workflow.values()
-         if isinstance(n, dict) and isinstance(n.get("inputs", {}).get("noise_seed"), int)),
+        (
+            n["inputs"]["noise_seed"]
+            for n in workflow.values()
+            if isinstance(n, dict) and isinstance(n.get("inputs", {}).get("noise_seed"), int)
+        ),
         None,
     )
     client_id = uuid.uuid4().hex
@@ -803,8 +1075,7 @@ def generate_image(text, style, characters_text="", narrator="", scene="", prese
             stage, model = image_step(label, models)
             add_stage(timeline, stage, secs, kind="image", model=model)
         add_stage(timeline, "queue wait and PNG save", waited - sum(steps.values()), kind="image", model="ComfyUI")
-        log("INFO", "image saved", file=name, waited=round(waited, 2),
-            steps={k: round(v, 2) for k, v in steps.items()})
+        log("INFO", "image saved", file=name, waited=round(waited, 2), steps={k: round(v, 2) for k, v in steps.items()})
         return name, prompt, seed
     finally:
         if listener:
@@ -826,11 +1097,16 @@ def _wait_for_result(prompt_id, prompt_text):
                 for image in node_output.get("images", []):
                     if image.get("type") != "output":
                         continue
-                    data = comfy_get("/view?" + urllib.parse.urlencode({
-                        "filename": image["filename"],
-                        "subfolder": image.get("subfolder", ""),
-                        "type": "output",
-                    }))
+                    data = comfy_get(
+                        "/view?"
+                        + urllib.parse.urlencode(
+                            {
+                                "filename": image["filename"],
+                                "subfolder": image.get("subfolder", ""),
+                                "type": "output",
+                            }
+                        )
+                    )
                     os.makedirs(OUTPUT_DIR, exist_ok=True)
                     ext = os.path.splitext(image["filename"])[1] or ".png"
                     name = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6] + ext
@@ -839,12 +1115,15 @@ def _wait_for_result(prompt_id, prompt_text):
                     return name, prompt_text
 
             if status.get("completed"):
-                raise RuntimeError("ComfyUI finished but produced no image. Make sure the workflow ends in a Save Image node.")
+                raise RuntimeError(
+                    "ComfyUI finished but produced no image. Make sure the workflow ends in a Save Image node."
+                )
         time.sleep(1)
     raise RuntimeError("Timed out waiting for ComfyUI.")
 
 
 # ---------- web server ----------
+
 
 class Handler(BaseHTTPRequestHandler):
     def parse_request(self):
@@ -867,10 +1146,8 @@ class Handler(BaseHTTPRequestHandler):
             handler()
         except Exception as e:
             log("ERROR", f"{self.command} {self.path} failed", error=str(e), traceback=traceback.format_exc())
-            try:
+            with contextlib.suppress(Exception):
                 self._json(500, {"error": f"Server error: {e}. See the debug log."})
-            except Exception:
-                pass
 
     def _send(self, code, body, content_type):
         self.send_response(code)
@@ -882,6 +1159,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, code, obj):
         self._send(code, json.dumps(obj).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _book_or_reply(self, book_id, missing=(404, "Unknown book.")):
+        """The book, or None after replying with the error (missing or bad id, or an unreadable file)."""
+        try:
+            return load_book(book_id)
+        except (FileNotFoundError, ValueError):
+            self._json(missing[0], {"error": missing[1]})
+        except BookFileError as e:
+            self._json(500, {"error": str(e)})
+        return None
 
     def _host_ok(self):
         # Blocks DNS rebinding: only requests addressed to this server's own port are served.
@@ -900,20 +1187,20 @@ class Handler(BaseHTTPRequestHandler):
             with open(INDEX_PATH, "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif path == "/api/status":
-            self._json(200, {
-                "comfy_ok": comfy_available(),
-                "workflow_ok": os.path.exists(WORKFLOW_PATH),
-                "comfy_url": CONFIG["comfy_url"],
-            })
+            self._json(
+                200,
+                {
+                    "comfy_ok": comfy_available(),
+                    "workflow_ok": os.path.exists(WORKFLOW_PATH),
+                    "comfy_url": CONFIG["comfy_url"],
+                },
+            )
         elif path == "/api/books":
             self._json(200, list_books())
         elif path.startswith("/api/books/"):
-            try:
-                self._json(200, book_view(load_book(path[len("/api/books/"):])))
-            except (FileNotFoundError, ValueError):
-                self._json(404, {"error": "Unknown book."})
-            except BookFileError as e:
-                self._json(500, {"error": str(e)})
+            book = self._book_or_reply(path[len("/api/books/") :])
+            if book is not None:
+                self._json(200, book_view(book))
         elif path == "/api/settings":
             self._json(200, read_settings())
         elif path == "/api/progress":
@@ -924,7 +1211,7 @@ class Handler(BaseHTTPRequestHandler):
             entries = log_entries_after(after)[-200:]
             self._json(200, {"entries": entries, "last": entries[-1]["seq"] if entries else after})
         elif path.startswith("/outputs/"):
-            full = os.path.join(OUTPUT_DIR, os.path.basename(path[len("/outputs/"):]))
+            full = os.path.join(OUTPUT_DIR, os.path.basename(path[len("/outputs/") :]))
             if os.path.isfile(full):
                 with open(full, "rb") as f:
                     self._send(200, f.read(), "image/png")
@@ -970,26 +1257,30 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             return
 
-        if path.startswith("/api/books/"):
+        if path.startswith("/api/books/") and path.endswith("/review"):
+            book = self._book_or_reply(path[len("/api/books/") : -len("/review")])
+            if book is None:
+                return
+            if not CONFIG.get("llm_enabled"):
+                self._json(400, {"error": "The book review needs the planner LLM (llm_enabled in config.json)."})
+                return
             try:
-                update_book(path[len("/api/books/"):], body)
-                self._json(200, {"ok": True})
-            except (FileNotFoundError, ValueError):
-                self._json(404, {"error": "Unknown book."})
-            except BookFileError as e:
-                self._json(500, {"error": str(e)})
+                problems = lint_book(book) + review_book(book)
+            except Exception as e:
+                log("ERROR", "book review failed", error=str(e), traceback=traceback.format_exc())
+                self._json(502, {"error": f"The book review failed: {e}"})
+                return
+            self._json(200, {"problems": problems})
+
+        elif path.startswith("/api/books/"):
+            if self._book_or_reply(path[len("/api/books/") :]) is not None:
+                book = update_book(path[len("/api/books/") :], body)
+                self._json(200, {"ok": True, "problems": lint_book(book)})
 
         elif path == "/api/settings":
             book_id = str(body.get("default_book", "")).strip()
-            if book_id:
-                try:
-                    load_book(book_id)  # the default must be a book that exists
-                except (FileNotFoundError, ValueError):
-                    self._json(404, {"error": "Unknown book."})
-                    return
-                except BookFileError as e:
-                    self._json(500, {"error": str(e)})
-                    return
+            if book_id and self._book_or_reply(book_id) is None:  # the default must be a book that exists
+                return
             settings = read_settings()
             settings["default_book"] = book_id
             write_settings(settings)
@@ -998,68 +1289,57 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/generate":
             started = time.perf_counter()
             text = str(body.get("text", "")).strip()
-            scene = str(body.get("scene", "")).strip()
+            # `seed` fixes the picture's noise, so a run is repeatable. `from_image` re-draws an earlier
+            # image's moment (its saved plan) with a new seed. `variant` is for evals: it supplies the plan
+            # itself and may replace the cast for this one request; nothing in it is saved to the book.
+            seed_req = body.get("seed")
+            seed_req = seed_req if isinstance(seed_req, int) and not isinstance(seed_req, bool) else None
+            variant = body.get("variant") if isinstance(body.get("variant"), dict) else None
             if not text:
                 self._json(400, {"error": "Paste some text first."})
                 return
-            timeline = []
-            t = time.perf_counter()
-            try:
-                # Save whatever the page shows, then generate from the saved book.
-                book = update_book(str(body.get("book", "")), body)
-            except (FileNotFoundError, ValueError):
-                self._json(400, {"error": "Pick a book first."})
+            book = self._book_or_reply(str(body.get("book", "")), missing=(400, "Pick a book first."))
+            if book is None:
                 return
-            except BookFileError as e:
-                self._json(500, {"error": str(e)})
-                return
-            add_stage(timeline, "Save book", time.perf_counter() - t)
-            style = book.get("visual_style_short") or book.get("visual_style", "")
-            characters_text = characters_to_text(book.get("characters", []))
+            characters = book["characters"]
+            if variant and isinstance(variant.get("characters"), list):
+                characters = normalise_book({"characters": variant["characters"]})["characters"]
             narrator = book.get("narrator", "")
-            glossary = book.get("glossary", [])
-            log("INFO", "generate start", book=book["id"], typed_scene=bool(scene),
-                characters=len(book.get("characters", [])))
+            timeline = []
+            log(
+                "INFO",
+                "generate start",
+                book=book["id"],
+                typed_scene=bool(body.get("scene")),
+                rerun=bool(body.get("from_image")),
+                characters=len(characters),
+            )
             with GENERATE_LOCK:
                 set_progress(active=True, label="Planning scene", value=0, max=0)
                 try:
-                    # A scene the user typed is used as it is; otherwise the planner may write one.
-                    planned = None
-                    if not scene:
-                        t = time.perf_counter()
-                        planned = plan_scene(text, characters_text, narrator, glossary)
-                        plan_wall = time.perf_counter() - t
-                        where = "GPU" if CONFIG["llm_num_gpu"] > 0 else "CPU"
-                        llm = f"{CONFIG['llm_model']} ({where})"
-                        if planned:
-                            tm = planned["timings"]
-                            add_stage(timeline, "unload ComfyUI models for the LLM", tm["free_comfy"],
-                                      kind="image", model="ComfyUI")
-                            add_stage(timeline, "load model", tm["load"], kind="llm", model=llm)
-                            add_stage(timeline, "read page and write scene", tm["prompt"] + tm["generate"],
-                                      kind="llm", model=llm)
-                            add_stage(timeline, "HTTP and parsing", plan_wall - tm["wall"], kind="llm", model=llm)
-                        else:
-                            add_stage(timeline, "no result (name matching used)", plan_wall, kind="llm", model=llm)
-                    present = None
-                    if planned:
-                        scene, present = planned["scene"], planned["present"]
-                    scene_source = "scene" if scene and not planned else ("planner" if planned else "page")
-                    planner_info = {
-                        "used": bool(planned),
-                        "present": planned["present"] if planned else [],
-                        "seconds": planned["seconds"] if planned else None,
-                        "terms": planned["terms"] if planned else [],
-                    }
-                    notes = [(g["term"], g.get("visual", "")) for g in glossary
-                             if g.get("term") and g.get("visual") and name_in_text(g["term"], text)]
-                    if CONFIG.get("llm_enabled"):
+                    plan, source, planner_info = decide_scene(body, text, book, characters, timeline)
+                    notes = [
+                        (g["term"], g["visual"]) for g in book["glossary"] if g["term"] in plan["terms"] and g["visual"]
+                    ]
+                    if planner_info.get("called"):
                         t = time.perf_counter()
                         llm_release()  # give the GPU back to ComfyUI before the image is made
-                        add_stage(timeline, "unload model", time.perf_counter() - t,
-                                  kind="llm", model=CONFIG["llm_model"])
-                    name, prompt, seed = generate_image(
-                        text, style, characters_text, narrator, scene, present, notes, timeline)
+                        add_stage(
+                            timeline, "unload model", time.perf_counter() - t, kind="llm", model=CONFIG["llm_model"]
+                        )
+                    prompt_text = build_prompt(
+                        book.get("visual_style", ""),
+                        text,
+                        characters,
+                        narrator,
+                        plan["scene"],
+                        plan["present"],
+                        notes,
+                        plan["setting"],
+                    )
+                    gpu_before = gpu_snapshot()
+                    name, prompt, seed = generate_image(prompt_text, timeline, seed_req)
+                    gpu_after = gpu_snapshot()
                 except urllib.error.HTTPError as e:
                     log("ERROR", "ComfyUI returned an HTTP error", code=e.code, url=e.url)
                     self._json(500, {"error": f"ComfyUI returned HTTP {e.code} for {e.url}"})
@@ -1075,16 +1355,28 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     set_progress(active=False)
             total = time.perf_counter() - started
-            log("INFO", "generate done", image=name, total=round(total, 2), stages=len(timeline))
-            self._json(200, {
-                "image_url": f"/outputs/{name}",
-                "prompt": prompt,
+            planner_info.pop("called", None)
+            record = {
+                "image": name,
+                "created": datetime.now().isoformat(timespec="seconds"),
+                "book": book["id"],
+                "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "prompt_version": PROMPT_VERSION,
                 "seed": seed,
-                "scene_source": scene_source,
+                "prompt": prompt,
+                "plan": dict(plan, source=source),
                 "planner": planner_info,
                 "timeline": timeline,
+                "gpu": {"before": gpu_before, "after": gpu_after},
                 "total_seconds": round(total, 2),
-            })
+                "variant": variant is not None,
+            }
+            try:
+                write_sidecar(name, record)
+            except OSError as e:
+                log("WARN", "could not write the image's sidecar file", error=str(e))
+            log("INFO", "generate done", image=name, total=round(total, 2), stages=len(timeline))
+            self._json(200, dict(record, image_url=f"/outputs/{name}"))
 
         else:
             self._send(404, b"not found", "text/plain")
