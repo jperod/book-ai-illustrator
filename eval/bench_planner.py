@@ -34,7 +34,11 @@ def load_cases():
             book = server.load_book(case["book"])
         else:
             book = server.normalise_book(
-                {"characters": [{"name": n} for n in case["names"]], "narrator": case.get("narrator", "")}
+                {
+                    "characters": [{"name": n} for n in case["names"]],
+                    "narrator": case.get("narrator", ""),
+                    "glossary": case.get("glossary", []),
+                }
             )
         case["characters"], case["glossary"], case["narrator"] = book["characters"], book["glossary"], book["narrator"]
     return cases
@@ -65,23 +69,29 @@ def main():
             except server.PlannerError:
                 plan = None
             present = plan["present"] if plan else []
+            terms = plan.get("terms", []) if plan else []
             must, must_not = set(case.get("must_be_present", [])), set(case.get("must_not_be_present", []))
+            must_terms, must_not_terms = set(case.get("must_terms", [])), set(case.get("must_not_terms", []))
             row = {
                 "run": run,
                 "case": case["_id"],
                 "ok": plan is not None,
                 "present": present,
+                "terms": terms,
                 "missing": sorted(must - set(present)),
                 "extra": sorted(must_not & set(present)),
+                "term_missing": sorted(must_terms - set(terms)),
+                "term_extra": sorted(must_not_terms & set(terms)),
                 "seconds": plan["seconds"] if plan else None,
                 "setting": plan["setting"] if plan else "",
                 "scene": plan["scene"] if plan else "",
                 "review": plan["review"] if plan else None,
             }
             rows.append(row)
+            term_info = f" terms={terms}" if terms or must_terms or must_not_terms else ""
             print(
-                f"run {run} {case['_id']:<26} present={present} missing={row['missing']} extra={row['extra']} "
-                f"{row['seconds']}s setting={row['setting']!r}",
+                f"run {run} {case['_id']:<26} present={present}{term_info} "
+                f"missing={row['missing']} extra={row['extra']} {row['seconds']}s setting={row['setting']!r}",
                 flush=True,
             )
     server.llm_release()

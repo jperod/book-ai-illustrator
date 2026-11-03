@@ -7,8 +7,8 @@ whenever the layout or wording below changes, so results stay traceable to the p
 
 from bible import character_line, count_line, normalise_character
 
-# m3: fixed "Scene:" wording (the word "book" invited title lettering), cast lines from the book's own fields.
-PROMPT_VERSION = "m3-2026-11-03"
+# m4: visual notes moved after setting so count line stays directly with character list.
+PROMPT_VERSION = "m4-2026-11-03"
 
 SINGLE_IMAGE_NOTE = "A single painting of one continuous scene filling the whole canvas, edge to edge."
 
@@ -31,12 +31,11 @@ def build_prompt(style, text, characters=(), narrator="", scene="", present=None
     if chars:
         parts += ["", "Characters in this scene (keep their appearance consistent):"]
         parts += [character_line(c, narrator) for c in chars]
-    if glossary_notes:
-        parts += ["", "Visual notes:"] + [f"- {term}: {visual}" for term, visual in glossary_notes]
-    if chars:
         parts += ["", count_line(chars)]
     if setting.strip():
         parts += ["", f"Setting: {setting.strip()}"]
+    if glossary_notes:
+        parts += ["", "Visual notes:"] + [f"- {term}: {visual}" for term, visual in glossary_notes]
     parts += ["", "Scene:", scene.strip() or text.strip()]
     if style.strip():
         parts += ["", f"Visual style: {style.strip()}"]

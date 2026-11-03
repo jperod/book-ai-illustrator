@@ -1,0 +1,15 @@
+{
+  "names": ["Mara", "Orrin"],
+  "narrator": "Mara",
+  "glossary": [
+    {
+      "term": "Sea-Raiders",
+      "meaning": "raiders who attack coastal towns from across the sea.",
+      "visual": "armoured sea-raiders in mail, carrying round shields"
+    }
+  ],
+  "text": "\"Watch for Sea-Raiders,\" Orrin warned. I sat by the hearth while he paced the floor.",
+  "must_be_present": ["Mara", "Orrin"],
+  "must_not_be_present": [],
+  "must_not_terms": ["Sea-Raiders"]
+}

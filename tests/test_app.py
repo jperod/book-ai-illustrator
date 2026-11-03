@@ -131,6 +131,21 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("Characters in this scene", prompt)
         self.assertNotIn("Visual style", prompt)
 
+    def test_prompt_order_keeps_count_line_with_characters_before_setting_and_visual_notes(self):
+        prompt = server.build_prompt(
+            "watercolor",
+            "A road.",
+            cast("Hero: tall woman"),
+            "",
+            "Hero walks.",
+            ["Hero"],
+            [("Sun-Banner", "a bright banner")],
+            "a stone road, outdoors, day",
+        )
+        self.assertLess(prompt.index("Figures in the picture, exactly 1: Hero."), prompt.index("Setting:"))
+        self.assertLess(prompt.index("Setting:"), prompt.index("Visual notes:"))
+        self.assertLess(prompt.index("Visual notes:"), prompt.index("Scene:"))
+
 
 class BookTests(TempDirsMixin, unittest.TestCase):
     def test_round_trip(self):
