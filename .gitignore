@@ -10,6 +10,7 @@ books/*.json
 !books/assassins-apprentice.json
 outputs/
 logs/
+eval/runs/
 books/*.tmp
 settings.json
 settings.json.tmp

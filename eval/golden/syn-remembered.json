@@ -1,0 +1,29 @@
+{
+  "id": "syn-remembered",
+  "book": "example-book",
+  "page_text": "Tomas sat alone on the pier, remembering his brother, who had sailed away years ago.",
+  "expect": {
+    "count": 1,
+    "people": [
+      {
+        "name": "Tomas",
+        "sex": "male",
+        "age_band": "older adult"
+      }
+    ],
+    "pose_action": "Tomas alone on a pier, looking at the water",
+    "absent": [
+      "Mara"
+    ],
+    "setting": "outdoors"
+  },
+  "tags": [
+    "1p",
+    "absent"
+  ],
+  "seeds": [
+    11,
+    22,
+    33
+  ]
+}

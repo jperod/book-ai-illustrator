@@ -1,0 +1,32 @@
+{
+  "id": "syn-dog-pose",
+  "book": "example-book",
+  "page_text": "Mara sits on the edge of the cart while Tomas leans over the wheel, checking a broken spoke. A grey dog barks at the gate.",
+  "expect": {
+    "count": 2,
+    "people": [
+      {
+        "name": "Mara",
+        "sex": "female",
+        "age_band": "young adult"
+      },
+      {
+        "name": "Tomas",
+        "sex": "male",
+        "age_band": "older adult"
+      }
+    ],
+    "pose_action": "Tomas leaning over a cart wheel, Mara seated on the cart",
+    "absent": [],
+    "setting": "outdoors"
+  },
+  "tags": [
+    "2p",
+    "tricky_pose"
+  ],
+  "seeds": [
+    11,
+    22,
+    33
+  ]
+}

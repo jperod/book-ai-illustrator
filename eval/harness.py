@@ -6,15 +6,17 @@ Reads every case in eval/local/cases/*.json. That folder is git-ignored because
 cases hold real book text. Case format:
 
     {
-      "book_id": "assassins-apprentice",
+      "book_id": "example-book",
       "page_text": "...",
       "scene": "",                       optional: replaces the page in the prompt
-      "expect_narrator": "Fitz",         optional: must be the first character listed
-      "must_contain": ["- Burrich:"],    optional: substrings the prompt must include
-      "must_not_contain": ["- Smithy:"], optional: substrings it must not include
+      "present": ["Ren", "Ama"],         who is visible (the planner's answer); without it no one is listed
+      "expect_narrator": "Ren",          optional: must be the first character listed
+      "must_contain": ["- Ama"],         optional: substrings the prompt must include
+      "must_not_contain": ["- Koll"], optional: substrings it must not include
       "max_scene_words": 120             optional: cap on the scene section
     }
 """
+
 import glob
 import json
 import os
@@ -26,7 +28,7 @@ sys.dont_write_bytecode = True
 import server  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "eval", "local", "cases")
-SCENE_HEADER = "Scene from the book:"
+SCENE_HEADER = "Scene:"
 
 
 def build_for_case(case):
@@ -34,9 +36,10 @@ def build_for_case(case):
     return server.build_prompt(
         book.get("visual_style", ""),
         case["page_text"],
-        server.characters_to_text(book.get("characters", [])),
+        book.get("characters", []),
         book.get("narrator", ""),
         case.get("scene", ""),
+        case.get("present"),
     )
 
 

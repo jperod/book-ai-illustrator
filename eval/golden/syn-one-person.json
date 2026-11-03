@@ -1,0 +1,28 @@
+{
+  "id": "syn-one-person",
+  "book": "example-book",
+  "page_text": "Mara stands alone at the harbour wall at dawn. The grey water slaps the stones below her, and she watches the empty sea.",
+  "expect": {
+    "count": 1,
+    "people": [
+      {
+        "name": "Mara",
+        "sex": "female",
+        "age_band": "young adult"
+      }
+    ],
+    "pose_action": "Mara alone at a harbour wall, looking out at the sea",
+    "absent": [
+      "Tomas"
+    ],
+    "setting": "outdoors"
+  },
+  "tags": [
+    "1p"
+  ],
+  "seeds": [
+    11,
+    22,
+    33
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "id": "syn-argue",
+  "book": "example-book",
+  "page_text": "Mara and Tomas argue beside the cart in the market. Tomas jabs a finger toward the road, and Mara steps between him and the cart with her arms raised.",
+  "expect": {
+    "count": 2,
+    "people": [
+      {
+        "name": "Mara",
+        "sex": "female",
+        "age_band": "young adult"
+      },
+      {
+        "name": "Tomas",
+        "sex": "male",
+        "age_band": "older adult"
+      }
+    ],
+    "pose_action": "Mara steps between Tomas and the cart with her arms raised",
+    "absent": [],
+    "setting": "outdoors"
+  },
+  "tags": [
+    "2p",
+    "mixed_gender"
+  ],
+  "seeds": [
+    11,
+    22,
+    33
+  ]
+}
