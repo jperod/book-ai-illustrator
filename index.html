@@ -250,6 +250,50 @@
     border-top: 1px solid var(--line);
   }
 
+  /* Character and glossary editors: one bordered row per entry. */
+  .char-list, .gloss-list { display: grid; gap: 10px; padding: 10px 12px; }
+  .char-row, .gloss-row {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px;
+    display: grid;
+    gap: 8px;
+  }
+  .gloss-row { grid-template-columns: 1fr 2fr 2fr auto; align-items: center; }
+  .char-head, .char-fields { display: flex; flex-wrap: wrap; gap: 8px; }
+  .char-row input, .char-row select, .gloss-row input {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font: inherit;
+    min-width: 0;
+  }
+  .char-head input { flex: 1 1 160px; }
+  .char-fields input { flex: 1 1 160px; }
+  .char-row input.look { flex: 1 1 100%; }
+  .gloss-row input { width: 100%; }
+  button.small {
+    padding: 4px 10px;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    cursor: pointer;
+    justify-self: start;
+  }
+  .add-row { padding: 0 12px 12px; }
+  .problems {
+    margin: 0;
+    padding: 10px 12px 10px 28px;
+    color: var(--muted);
+    font-size: 13px;
+    border-top: 1px solid var(--line);
+  }
+  .problems .error { color: #d9534f; }
+
   /* Narrow screens: the book list moves above the page as a row of chips */
   @media (max-width: 760px) {
     .layout { grid-template-columns: 1fr; gap: 20px; }
@@ -292,7 +336,17 @@
           <option value="">None</option>
         </select>
       </div>
-      <textarea id="characters" placeholder="One per line, name first:&#10;Hero: tall, dark hair, grey wool cloak&#10;Companion: small white dog, red collar"></textarea>
+      <div id="charList" class="char-list"></div>
+      <div class="add-row">
+        <button type="button" class="small" id="addChar">Add character</button>
+        <button type="button" class="small" id="reviewBook" title="Ask the planner LLM to check the characters, style and glossary">Review book</button>
+      </div>
+      <ul id="problems" class="problems" hidden></ul>
+    </details>
+    <details id="glossBox">
+      <summary>Glossary</summary>
+      <div id="glossList" class="gloss-list"></div>
+      <div class="add-row"><button type="button" class="small" id="addGloss">Add term</button></div>
     </details>
 
     <button id="go">Generate</button>
@@ -302,6 +356,7 @@
     </div>
     <div id="status"></div>
     <div id="result"></div>
+    <button id="reroll" type="button" hidden>Try another seed</button>
     <details id="promptBox" hidden>
       <summary>Prompt used</summary>
       <pre id="promptText"></pre>
@@ -314,9 +369,12 @@
   const booksEl = $("books");
   const textEl = $("text");
   const styleEl = $("style");
-  const charsEl = $("characters");
+  const charListEl = $("charList");
+  const glossListEl = $("glossList");
+  const problemsEl = $("problems");
   const styleBox = $("styleBox");
   const charsBox = $("charsBox");
+  const glossBox = $("glossBox");
   const goBtn = $("go");
   const statusEl = $("status");
   const resultEl = $("result");
@@ -353,20 +411,16 @@
     } catch (e) { /* ignore a missed poll */ }
   }
 
-  // Character names are the part of each 'Name: description' line before the colon.
-  function characterNames() {
-    const names = [];
-    for (const line of charsEl.value.split("\n")) {
-      const i = line.indexOf(":");
-      if (i < 0) continue;
-      const name = line.slice(0, i).trim();
-      if (name && line.slice(i + 1).trim()) names.push(name);
-    }
-    return names;
-  }
+  // The book being edited: its characters and glossary, and the save that is waiting to go out.
+  let characters = [];
+  let glossary = [];
+  let pendingSave = null;
+  const KINDS = ["person", "animal", "creature"];
+  const SEXES = ["male", "female", "unspecified"];
+  const AGES = ["child", "teen", "young adult", "adult", "middle-aged", "elderly"];
 
   function refreshNarratorOptions(selected) {
-    const names = characterNames();
+    const names = characters.map((c) => c.name).filter(Boolean);
     narratorEl.replaceChildren(
       new Option("None", ""),
       ...names.map((n) => new Option(n, n)),
@@ -453,26 +507,203 @@
     }
   }
 
-  // Picking a book fills in its visual style and characters.
+  // Picking a book fills in its visual style, characters and glossary.
   async function selectBook(id) {
     try {
       const r = await fetch(`/api/books/${encodeURIComponent(id)}`);
       if (!r.ok) throw new Error("unknown book");
       const b = await r.json();
+      if (pendingSave) flushSave(pendingSave);  // the previous book's edits go to that book
       currentBook = id;
       for (const row of booksEl.children) {
         row.classList.toggle("active", row.dataset.id === id);
       }
       styleEl.value = b.visual_style || "";
-      charsEl.value = b.characters_text || "";
+      characters = b.characters || [];
+      glossary = b.glossary || [];
+      renderCharacters();
+      renderGlossary();
       refreshNarratorOptions(b.narrator || "");
+      showProblems(b.problems || []);
       // Open each box only when it is empty.
       styleBox.open = !styleEl.value.trim();
-      charsBox.open = !charsEl.value.trim();
+      charsBox.open = characters.length === 0;
+      glossBox.open = glossary.length === 0;
     } catch (e) {
       setStatus("Could not load that book.", true);
     }
   }
+
+  // ----- character and glossary editor -----
+  // Every change is saved shortly after typing stops, to the book it was made in.
+  // The save carries its own copy of the data, so switching books cannot send one book's edits to another.
+  function scheduleSave() {
+    if (!currentBook) return;
+    if (pendingSave) clearTimeout(pendingSave.timer);
+    // Switching books assigns new arrays, so these references stay with the book they were edited in.
+    const job = { bookId: currentBook, characters, glossary };
+    job.timer = setTimeout(() => flushSave(job), 800);
+    pendingSave = job;
+  }
+
+  function flushSave(job) {
+    if (pendingSave === job) pendingSave = null;
+    clearTimeout(job.timer);
+    return fetch(`/api/books/${encodeURIComponent(job.bookId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ characters: job.characters, glossary: job.glossary }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (job.bookId === currentBook) showProblems(data.problems || []);
+      })
+      .catch(() => setStatus("Could not save the characters or glossary.", true));
+  }
+
+  function showProblems(list) {
+    problemsEl.replaceChildren(...list.map((p) => {
+      const li = document.createElement("li");
+      li.className = p.level;
+      li.textContent = p.message;
+      return li;
+    }));
+    problemsEl.hidden = list.length === 0;
+  }
+
+  function editField(placeholder, label, value, onInput, className) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value || "";
+    input.placeholder = placeholder;
+    input.setAttribute("aria-label", label);
+    if (className) input.className = className;
+    input.addEventListener("input", () => onInput(input.value));
+    return input;
+  }
+
+  function pickField(options, value, label, onChange) {
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", label);
+    for (const option of ["", ...options]) {
+      select.append(new Option(option || `${label}: not set`, option));
+    }
+    select.value = value || "";
+    select.addEventListener("change", () => onChange(select.value));
+    return select;
+  }
+
+  function renderCharacters() {
+    charListEl.replaceChildren(...characters.map((c, index) => {
+      const row = document.createElement("div");
+      row.className = "char-row";
+      const kind = c.kind || "person";
+
+      const head = document.createElement("div");
+      head.className = "char-head";
+      head.append(
+        editField("Name", "Name", c.name, (v) => { c.name = v; scheduleSave(); }),
+        pickField(KINDS, kind, "Kind", (v) => { c.kind = v; renderCharacters(); scheduleSave(); }),
+      );
+
+      const fields = document.createElement("div");
+      fields.className = "char-fields";
+      if (kind === "person") {
+        fields.append(
+          pickField(SEXES, c.sex, "Sex", (v) => { c.sex = v; scheduleSave(); }),
+          pickField(AGES, c.age, "Age", (v) => { c.age = v; scheduleSave(); }),
+        );
+      } else {
+        fields.append(editField("species, e.g. wolf", "Species", c.species, (v) => {
+          c.species = v.trim().toLowerCase();
+          scheduleSave();
+        }));
+      }
+      fields.append(editField("other names, comma separated", "Other names", (c.aliases || []).join(", "), (v) => {
+        c.aliases = v.split(",").map((s) => s.trim()).filter(Boolean);
+        scheduleSave();
+      }));
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "small";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        characters.splice(index, 1);
+        renderCharacters();
+        scheduleSave();
+      });
+
+      row.append(
+        head,
+        fields,
+        editField("look: hair, clothes, build, role (no sex or age words needed)", "Look", c.look,
+                  (v) => { c.look = v; scheduleSave(); }, "look"),
+        remove,
+      );
+      return row;
+    }));
+    refreshNarratorOptions(narratorEl.value);
+  }
+
+  function renderGlossary() {
+    glossListEl.replaceChildren(...glossary.map((g, index) => {
+      const row = document.createElement("div");
+      row.className = "gloss-row";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "small";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        glossary.splice(index, 1);
+        renderGlossary();
+        scheduleSave();
+      });
+      row.append(
+        editField("Term", "Term", g.term, (v) => { g.term = v; scheduleSave(); }),
+        editField("Meaning (for the planner)", "Meaning", g.meaning, (v) => { g.meaning = v; scheduleSave(); }),
+        editField("Visual note (for the image)", "Visual note", g.visual, (v) => { g.visual = v; scheduleSave(); }),
+        remove,
+      );
+      return row;
+    }));
+  }
+
+  $("addChar").addEventListener("click", () => {
+    if (!currentBook) return;
+    characters.push({ name: "", aliases: [], kind: "person", sex: "", age: "", species: "", look: "" });
+    renderCharacters();
+    charsBox.open = true;
+  });
+
+  // The structural checks come with every save; this asks the LLM to read the book for content problems.
+  $("reviewBook").addEventListener("click", async () => {
+    if (!currentBook) return;
+    const btn = $("reviewBook");
+    btn.disabled = true;
+    setStatus("Reviewing the book with the LLM…");
+    try {
+      if (pendingSave) await flushSave(pendingSave);  // the review must read the saved edits
+      const r = await fetch(`/api/books/${encodeURIComponent(currentBook)}/review`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: "{}" });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      showProblems(data.problems || []);
+      charsBox.open = true;
+      setStatus(data.problems.length ? `Review found ${data.problems.length} problem(s).` : "Review found no problems.");
+    } catch (e) {
+      setStatus("Review failed: " + e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $("addGloss").addEventListener("click", () => {
+    if (!currentBook) return;
+    glossary.push({ term: "", meaning: "", visual: "" });
+    renderGlossary();
+    glossBox.open = true;
+  });
 
   // Save a field to the book it was typed in, shortly after typing stops.
   function autosave(el, field) {
@@ -492,8 +723,6 @@
     });
   }
   autosave(styleEl, "visual_style");
-  autosave(charsEl, "characters_text");
-  charsEl.addEventListener("input", () => refreshNarratorOptions(narratorEl.value));
 
   narratorEl.addEventListener("change", () => {
     if (!currentBook) return;
@@ -576,6 +805,11 @@
     }
   });
 
+  // The page, book and image name of the last picture. "Try another seed" re-draws that image's saved plan
+  // with a new seed, so only the picture is re-made: the scene, the people and the setting stay the same.
+  let lastRequest = null;
+  const rerollBtn = $("reroll");
+
   async function generate() {
     // The button is disabled while a run is in progress; Ctrl+Enter must not bypass that.
     if (goBtn.disabled) return;
@@ -585,7 +819,35 @@
       textEl.focus();
       return;
     }
+    // The book is saved through its own endpoint first; generate only reads it.
+    if (pendingSave) await flushSave(pendingSave);
+    try {
+      const r = await fetch(`/api/books/${encodeURIComponent(currentBook)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visual_style: styleEl.value }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    } catch (e) {
+      setStatus("Could not save the book: " + e.message, true);
+      return;
+    }
+    await runImage({ text, scene: sceneEl.value, book: currentBook });
+  }
+
+  async function reroll() {
+    if (goBtn.disabled || !lastRequest) return;
+    await runImage({
+      text: lastRequest.text,
+      book: lastRequest.book,
+      from_image: lastRequest.image,
+      seed: Math.floor(Math.random() * 2147483647),
+    });
+  }
+
+  async function runImage(body) {
     goBtn.disabled = true;
+    rerollBtn.disabled = true;
     $("progress").hidden = false;
     setBar(0, 0, "Starting…");
     const poll = setInterval(pollProgress, 300);
@@ -595,13 +857,7 @@
       const r = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          scene: sceneEl.value,
-          book: currentBook,
-          visual_style: styleEl.value,
-          characters_text: charsEl.value,
-        }),
+        body: JSON.stringify(body),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -614,17 +870,22 @@
       promptBox.hidden = false;
       setBar(1, 1, "Done");
       const p = data.planner || {};
-      const who = p.used ? ` · planner ${p.seconds} s: ${p.present.join(", ") || "no one"}` : "";
-      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s${who}`);
+      const who = p.used ? ` · planner ${p.seconds} s: ${data.plan.present.join(", ") || "no one"}` : "";
+      setStatus(`Done in ${((performance.now() - started) / 1000).toFixed(1)} s · seed ${data.seed}${who}`);
       renderTiming(data.timeline || [], data.total_seconds || 0);
+      lastRequest = { text: body.text, book: body.book, image: data.image };
+      rerollBtn.hidden = false;
     } catch (e) {
       $("progress").hidden = true;
       setStatus("Error: " + e.message, true);
     } finally {
       clearInterval(poll);
       goBtn.disabled = false;
+      rerollBtn.disabled = false;
     }
   }
+
+  rerollBtn.addEventListener("click", reroll);
 
   goBtn.addEventListener("click", generate);
   textEl.addEventListener("keydown", (e) => {
