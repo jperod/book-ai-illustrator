@@ -587,13 +587,34 @@ class PlannerTests(FakePlannerMixin, unittest.TestCase):
         )
         self.assertEqual(plan["terms"], ["Wending"])
 
-    def test_bad_replies_and_dead_server_fall_back_to_none(self):
+    def test_bad_replies_and_dead_server_raise_planner_error(self):
         self.llm.state["reply"] = "not json"
-        self.assertIsNone(server.plan_scene("I saw Ama.", PLANNER_CHARS, "Ren", []))
+        with self.assertRaises(server.PlannerError):
+            server.plan_scene("I saw Ama.", PLANNER_CHARS, "Ren", [])
         self.llm.state["reply"] = json.dumps({"checks": "nope", "terms": [], "setting": ROAD, "scene": ""})
-        self.assertIsNone(server.plan_scene("I saw Ama.", PLANNER_CHARS, "Ren", []))
+        with self.assertRaises(server.PlannerError):
+            server.plan_scene("I saw Ama.", PLANNER_CHARS, "Ren", [])
         server.CONFIG["llm_url"] = "http://127.0.0.1:1"
-        self.assertIsNone(server.plan_scene("I saw Ama.", PLANNER_CHARS, "Ren", []))
+        with self.assertRaises(server.PlannerError):
+            server.plan_scene("I saw Ama.", PLANNER_CHARS, "Ren", [])
+
+    def test_cut_off_answer_is_retried_with_a_bigger_budget(self):
+        self.llm.state["replies"] = ['{"checks": [{"name": "Ren", "visi', planner_reply(visible("Ren"))]
+        plan = server.plan_scene("I walked.", PLANNER_CHARS, "Ren", [])
+        self.assertEqual(plan["present"], ["Ren"])
+        first, second = (r["options"]["num_predict"] for r in self.llm.state["received"])
+        self.assertEqual(second, first * 2)
+
+    def test_answer_budget_grows_with_the_cast(self):
+        self.llm.state["reply"] = planner_reply(visible("Ren"))
+        server.plan_scene("I walked.", PLANNER_CHARS, "Ren", [])
+        small = self.llm.state["received"][-1]["options"]["num_predict"]
+        big_cast = (
+            PLANNER_CHARS
+            + server.normalise_book({"characters": [{"name": f"Extra{i}"} for i in range(20)]})["characters"]
+        )
+        server.plan_scene("I walked.", big_cast, "Ren", [])
+        self.assertGreater(self.llm.state["received"][-1]["options"]["num_predict"], small)
 
     def test_disabled_planner_makes_no_calls(self):
         server.CONFIG["llm_enabled"] = False
@@ -633,10 +654,13 @@ class ReviewerTests(FakePlannerMixin, unittest.TestCase):
         self.llm.state["replies"] = [planner_reply(visible("Ren"), scene="Ren walks a road."), review_reply(True)]
         self.assertEqual(server.plan_scene("I walked.", PLANNER_CHARS, "Ren", [])["scene"], "Ren walks a road.")
 
-    def test_no_fix_keeps_people_and_setting_and_drops_the_scene(self):
-        self.llm.state["replies"] = [planner_reply(visible("Ren")), review_reply(False, ["bad"], "")]
+    def test_no_fix_keeps_the_planners_scene(self):
+        self.llm.state["replies"] = [
+            planner_reply(visible("Ren"), scene="Ren walks a road."),
+            review_reply(False, ["bad"], ""),
+        ]
         plan = server.plan_scene("I walked.", PLANNER_CHARS, "Ren", [])
-        self.assertEqual((plan["scene"], plan["present"], plan["setting"]), ("", ["Ren"], "a road, outdoors, dusk"))
+        self.assertEqual((plan["scene"], plan["present"]), ("Ren walks a road.", ["Ren"]))
 
     def test_review_off_makes_one_call(self):
         server.CONFIG["planner_validate"] = False
@@ -804,6 +828,21 @@ class EvalVariantTests(TempDirsMixin, unittest.TestCase):
         )
         self.assertIn("Figures in the picture, exactly 2: Hero, Guard.", prompt)
         self.assertLess(prompt.index("Figures in the picture"), prompt.index("\nScene:\n"))
+
+    def test_planner_failure_draws_nothing(self):
+        # The fake planner address refuses connections, so the planner fails.
+        status, body = self.post("/api/generate", {"text": "I walked the road at dusk.", "book": "test-book"})
+        self.assertEqual(status, 502)
+        self.assertIn("scene planner failed", body["error"])
+        self.assertEqual(self.comfy.state["received"], [])
+
+    def test_planner_off_asks_for_a_typed_scene(self):
+        server.CONFIG["llm_enabled"] = False
+        status, body = self.post("/api/generate", {"text": "I walked the road at dusk.", "book": "test-book"})
+        self.assertEqual(status, 400)
+        self.assertIn("type a scene", body["error"])
+        status, _ = self.post("/api/generate", {"text": "I walked.", "book": "test-book", "scene": "A road."})
+        self.assertEqual(status, 200)
 
     def test_fixed_seed_is_sent_to_comfy(self):
         server.generate_image("A quiet forest.", seed=12345)

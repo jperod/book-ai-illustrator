@@ -60,7 +60,10 @@ def main():
     rows = []
     for run in range(args.runs):
         for case in cases:
-            plan = server.plan_scene(case["text"], case["characters"], case["narrator"], case["glossary"])
+            try:
+                plan = server.plan_scene(case["text"], case["characters"], case["narrator"], case["glossary"])
+            except server.PlannerError:
+                plan = None
             present = plan["present"] if plan else []
             must, must_not = set(case.get("must_be_present", [])), set(case.get("must_not_be_present", []))
             row = {

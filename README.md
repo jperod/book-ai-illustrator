@@ -22,16 +22,16 @@ The hard parts are speed on consumer hardware and keeping characters looking the
 
 ## Tech stack
 
-| Area | What is used | Notes |
-|---|---|---|
-| App server | Python 3.12, standard library only: `http.server`, `urllib`, `threading`, `difflib` | No pip dependencies. Managed with uv |
-| Progress | ComfyUI's `/ws` socket, read by a small WebSocket client in `server.py` | Feeds the live progress bar |
-| Page | One `index.html` with plain JavaScript and CSS | No framework, no build step |
-| Image model | FLUX.2 Klein 4B (fp8), Qwen3 4B text encoder and FLUX.2 VAE, run in ComfyUI | Graph in `workflow_api.json`, in ComfyUI's API format |
-| Scene planner | Ollama `/api/chat` with a JSON schema. Default model `qwen3:8b`, thinking off | Runs on the GPU and is unloaded before FLUX runs |
-| Evaluation | `eval/harness.py` (offline prompt checks) and `eval/bench_planner.py` (planner benchmark) | Standard library only |
-| Tests | `unittest`, with a fake ComfyUI and a fake Ollama | No GPU needed |
-| Target hardware | NVIDIA RTX 4060 Ti, 8 GB VRAM. Linux and Windows | |
+| Area            | What is used                                                                              | Notes                                                 |
+| --------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| App server      | Python 3.12, standard library only: `http.server`, `urllib`, `threading`, `difflib`       | No pip dependencies. Managed with uv                  |
+| Progress        | ComfyUI's `/ws` socket, read by a small WebSocket client in `server.py`                   | Feeds the live progress bar                           |
+| Page            | One `index.html` with plain JavaScript and CSS                                            | No framework, no build step                           |
+| Image model     | FLUX.2 Klein 4B (fp8), Qwen3 4B text encoder and FLUX.2 VAE, run in ComfyUI               | Graph in `workflow_api.json`, in ComfyUI's API format |
+| Scene planner   | Ollama `/api/chat` with a JSON schema. Default model `qwen3:8b`, thinking off             | Runs on the GPU and is unloaded before FLUX runs      |
+| Evaluation      | `eval/harness.py` (offline prompt checks) and `eval/bench_planner.py` (planner benchmark) | Standard library only                                 |
+| Tests           | `unittest`, with a fake ComfyUI and a fake Ollama                                         | No GPU needed                                         |
+| Target hardware | NVIDIA RTX 4060 Ti, 8 GB VRAM. Linux or Windows                                          |                                                       |
 
 ## Requirements
 
@@ -118,7 +118,10 @@ Each book is one JSON file in `books/`:
   "book_number": 1,
   "visual_style": "Watercolor and ink, muted earth tones, soft directional light.",
   "characters": [
-    { "name": "Mara", "description": "young woman, short dark hair, green travelling cloak" }
+    {
+      "name": "Mara",
+      "description": "young woman, short dark hair, green travelling cloak"
+    }
   ]
 }
 ```
@@ -151,12 +154,12 @@ The page text is sent only to the Ollama address in `llm_url`, which is on your 
 
 Benchmarks on an RTX 4060 Ti (8 GB): six test cases, two passes each, using the app's settings (`checks2` mode, thinking off, temperature 0, 2048-token context). Seconds are the warm median per page.
 
-| Model (Ollama tag) | Where | Seconds per page | Recall | Precision | Forbidden names |
-|---|---|---|---|---|---|
-| `qwen3:8b` | GPU | 2.0 | 0.97 | 1.00 | 0 |
-| `qwen3:4b-instruct-2507-q4_K_M` | GPU | 1.2 | 0.92 | 1.00 | 0 |
-| `qwen3.5:9b` | GPU | 2.8 | 0.92 | 1.00 | 0 |
-| `qwen3:4b-instruct-2507-q4_K_M` | CPU | 7.8 | 0.92 | 1.00 | 0 |
+| Model (Ollama tag)              | Where | Seconds per page | Recall | Precision | Forbidden names |
+| ------------------------------- | ----- | ---------------- | ------ | --------- | --------------- |
+| `qwen3:8b`                      | GPU   | 2.0              | 0.97   | 1.00      | 0               |
+| `qwen3:4b-instruct-2507-q4_K_M` | GPU   | 1.2              | 0.92   | 1.00      | 0               |
+| `qwen3.5:9b`                    | GPU   | 2.8              | 0.92   | 1.00      | 0               |
+| `qwen3:4b-instruct-2507-q4_K_M` | CPU   | 7.8              | 0.92   | 1.00      | 0               |
 
 The sample is small, so treat these as indicative. See [Evaluation](#evaluation) to rerun them.
 
@@ -164,20 +167,20 @@ The sample is small, so treat these as indicative. See [Evaluation](#evaluation)
 
 Settings live in `config.json`:
 
-| Key | Default | Meaning |
-|---|---|---|
-| `comfy_url` | `http://127.0.0.1:8188` | Where ComfyUI is running |
-| `port` | `8000` | Port for this app |
-| `width`, `height` | `1024` | Image size in pixels |
-| `steps` | `8` | Sampling steps. More steps take longer and can add detail |
-| `timeout_seconds` | `600` | How long to wait for ComfyUI before giving up |
-| `open_browser` | `true` | Open the page when the app starts |
-| `llm_enabled` | `false` (`true` in this repo's `config.json`) | Turn the scene planner on |
-| `llm_url` | `http://127.0.0.1:11434` | Where Ollama is running |
-| `llm_model` | `qwen3:8b` | Ollama model used by the planner |
-| `llm_timeout` | `60` | Seconds to wait for the planner before falling back |
-| `llm_num_gpu` | `99` | Layers on the GPU. `0` runs the planner on the CPU |
-| `llm_keep_alive` | `"2m"` | How long Ollama keeps the planner loaded between requests |
+| Key               | Default                                       | Meaning                                                   |
+| ----------------- | --------------------------------------------- | --------------------------------------------------------- |
+| `comfy_url`       | `http://127.0.0.1:8188`                       | Where ComfyUI is running                                  |
+| `port`            | `8000`                                        | Port for this app                                         |
+| `width`, `height` | `1024`                                        | Image size in pixels                                      |
+| `steps`           | `8`                                           | Sampling steps. More steps take longer and can add detail |
+| `timeout_seconds` | `600`                                         | How long to wait for ComfyUI before giving up             |
+| `open_browser`    | `true`                                        | Open the page when the app starts                         |
+| `llm_enabled`     | `false` (`true` in this repo's `config.json`) | Turn the scene planner on                                 |
+| `llm_url`         | `http://127.0.0.1:11434`                      | Where Ollama is running                                   |
+| `llm_model`       | `qwen3:8b`                                    | Ollama model used by the planner                          |
+| `llm_timeout`     | `60`                                          | Seconds to wait for the planner before falling back       |
+| `llm_num_gpu`     | `99`                                          | Layers on the GPU. `0` runs the planner on the CPU        |
+| `llm_keep_alive`  | `"2m"`                                        | How long Ollama keeps the planner loaded between requests |
 
 UI choices such as the default book are kept in `settings.json`, which is git-ignored.
 

@@ -51,7 +51,7 @@ CONFIG = {
     "llm_enabled": False,
     "llm_url": "http://127.0.0.1:11434",
     "llm_model": "qwen3:8b",
-    "llm_timeout": 60,
+    "llm_timeout": 180,  # seconds; a long page with a big cast can take a while, and calls queue in Ollama
     "llm_num_gpu": 99,
     "llm_keep_alive": "2m",
     "planner_validate": True,  # a second LLM call reviews and fixes the planner's scene (see review_scene)
@@ -481,35 +481,65 @@ def setting_line(setting):
     return ", ".join(p for p in parts if p and p.lower() != "unknown")
 
 
-def llm_json(system, examples, user, schema, num_predict=300):
+class PlannerError(Exception):
+    """The planner LLM gave no usable answer."""
+
+
+def context_size(prompt_chars, num_predict):
+    """A context window that holds the request (about 3 characters per token) and the answer."""
+    need = prompt_chars // 3 + num_predict + 256
+    return next((size for size in (4096, 8192, 16384) if need <= size), 32768)
+
+
+def llm_json(system, examples, user, schema, num_predict):
     """One chat call that must answer with JSON matching `schema`. Examples are (user, answer) pairs.
-    Returns (raw Ollama reply, parsed object, seconds)."""
+    The context window is sized from the request. An answer cut off by the token budget (unparseable JSON)
+    is retried once with double the budget. Returns (raw Ollama reply, parsed object, seconds)."""
     messages = [{"role": "system", "content": system}]
     for example_user, example_answer in examples:
         messages.append({"role": "user", "content": example_user})
         messages.append({"role": "assistant", "content": json.dumps(example_answer)})
     messages.append({"role": "user", "content": user})
+    prompt_chars = sum(len(m["content"]) for m in messages) + len(json.dumps(schema))
     t0 = time.perf_counter()
-    data = ollama_post(
-        "/api/chat",
-        {
-            "model": CONFIG["llm_model"],
-            "stream": False,
-            "think": False,
-            "keep_alive": CONFIG["llm_keep_alive"],
-            "messages": messages,
-            "format": schema,
-            "options": {
-                "temperature": 0,
-                "num_ctx": 4096,
-                "num_predict": num_predict,
-                "num_gpu": CONFIG["llm_num_gpu"],
+    for attempt in (1, 2):
+        data = ollama_post(
+            "/api/chat",
+            {
+                "model": CONFIG["llm_model"],
+                "stream": False,
+                "think": False,
+                "keep_alive": CONFIG["llm_keep_alive"],
+                "messages": messages,
+                "format": schema,
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": context_size(prompt_chars, num_predict),
+                    "num_predict": num_predict,
+                    "num_gpu": CONFIG["llm_num_gpu"],
+                },
             },
-        },
-        timeout=CONFIG["llm_timeout"],
-    )
+            timeout=CONFIG["llm_timeout"],
+        )
+        try:
+            obj = json.loads(data["message"]["content"])
+            break
+        except ValueError as e:
+            if attempt == 2:
+                raise PlannerError(
+                    f"the model's answer was not complete JSON even with {num_predict} tokens "
+                    f"(done_reason: {data.get('done_reason')}): {e}"
+                ) from e
+            log(
+                "WARN",
+                "LLM answer cut off; retrying with a larger budget",
+                num_predict=num_predict,
+                done_reason=data.get("done_reason"),
+                error=str(e),
+            )
+            num_predict *= 2
     seconds = round(time.perf_counter() - t0, 2)
-    return data, json.loads(data["message"]["content"]), seconds
+    return data, obj, seconds
 
 
 def planner_schema(names, terms):
@@ -543,7 +573,7 @@ def review_scene(scene, present, setting):
         f"Visible: {', '.join(present) if present else 'nobody'}\n"
         f"Setting: {setting_line(setting) or 'unknown'}\nScene: {scene}"
     )
-    _, obj, seconds = llm_json(REVIEW_SYSTEM, REVIEW_FEW_SHOT, user, REVIEW_SCHEMA, num_predict=260)
+    _, obj, seconds = llm_json(REVIEW_SYSTEM, REVIEW_FEW_SHOT, user, REVIEW_SCHEMA, num_predict=600)
     problems = [str(p) for p in obj.get("problems", []) if str(p).strip()]
     return bool(obj.get("ok")), problems, str(obj.get("scene", "")).strip(), seconds
 
@@ -551,10 +581,11 @@ def review_scene(scene, present, setting):
 def plan_scene(text, characters, narrator, glossary):
     """Returns {"present", "scene", "setting", "terms", "seconds", "timings", "review"}, or None. Never raises.
     `characters` and `glossary` come from load_book (already normalised). With planner_validate on, the
-    reviewer checks the scene; its fixed scene is used, and with no usable fix the scene is left empty, so the
-    page text is drawn with the planner's people and setting."""
-    if not CONFIG.get("llm_enabled") or not (characters or glossary):
-        return None  # nothing for the planner to decide
+    reviewer checks the scene and its fixed scene is used; with no usable fix the planner's scene is kept.
+    Returns None when the planner is off. Raises PlannerError when the LLM gives no usable answer: the raw
+    page is never drawn in its place."""
+    if not CONFIG.get("llm_enabled"):
+        return None
     try:
         alias_of = {}
         for c in characters:
@@ -576,6 +607,7 @@ def plan_scene(text, characters, narrator, glossary):
             PLANNER_FEW_SHOT,
             cast_text(characters, narrator, glossary) + "\nPage:\n" + text,
             planner_schema(list(alias_of), term_names),
+            num_predict=400 + 30 * len(characters),  # a check per cast member, plus setting and scene
         )
         checks, scene = obj.get("checks"), obj.get("scene")
         if (
@@ -584,8 +616,7 @@ def plan_scene(text, characters, narrator, glossary):
             or not scene.strip()
             or not all(isinstance(c, dict) and isinstance(c.get("visible_in_moment"), bool) for c in checks)
         ):
-            log("WARN", "planner reply rejected: wrong shape", reply=str(data["message"]["content"])[:300])
-            return None
+            raise PlannerError("the planner's answer had the wrong shape")
         present = []
         for c in checks:
             name = alias_of.get(c.get("name"))
@@ -605,8 +636,8 @@ def plan_scene(text, characters, narrator, glossary):
                 log("WARN", "scene review failed; keeping the planner's scene", error=str(e))
                 ok, problems, fixed = True, [], ""
             review = {"used": True, "ok": ok, "problems": problems}
-            if not ok:
-                scene = fixed  # empty when the reviewer could not fix it: the page text is drawn instead
+            if not ok and fixed:
+                scene = fixed  # with no usable fix, the planner's own scene is kept
             log("INFO", "scene review", ok=ok, problems=problems, fixed=bool(fixed), seconds=review_s)
         timings = {
             "free_comfy": round(free_s, 2),
@@ -626,9 +657,12 @@ def plan_scene(text, characters, narrator, glossary):
             "timings": timings,
             "review": review,
         }
+    except PlannerError as e:
+        log("ERROR", "planner failed", error=str(e))
+        raise
     except Exception as e:
-        log("ERROR", "planner failed; using the page", error=str(e), traceback=traceback.format_exc())
-        return None
+        log("ERROR", "planner failed", error=str(e), traceback=traceback.format_exc())
+        raise PlannerError(str(e)) from e
 
 
 def review_book(book):
@@ -1002,10 +1036,15 @@ def gpu_snapshot():
     return {key: _number(value) for key, value in zip(keys, values, strict=False)}
 
 
+class NeedsSceneError(Exception):
+    """The planner is off and no scene was typed, so there is nothing sensible to draw."""
+
+
 def decide_scene(body, text, book, characters, timeline):
     """What to draw: (plan, source, planner info). Sources, in order: an eval variant, the saved plan of an
     earlier image (a re-roll), or the planner; a scene typed by the user replaces only the planner's scene.
-    Without a planner answer the plan is empty and the page text is drawn with no character list."""
+    The raw page is never drawn: with no typed scene, a planner failure raises PlannerError and a planner that
+    is off raises NeedsSceneError."""
     variant = body.get("variant")
     if isinstance(variant, dict) and ("scene" in variant or "present" in variant):
         return plan_from_request(variant), "variant", {"used": False}
@@ -1013,10 +1052,17 @@ def decide_scene(body, text, book, characters, timeline):
         saved = read_saved_plan(body["from_image"])
         if saved:
             return saved, "saved", {"used": False}
-    t = time.perf_counter()
-    planned = plan_scene(text, characters, book.get("narrator", ""), book["glossary"])
-    wall = time.perf_counter() - t
+    typed = str(body.get("scene", "")).strip()
     llm = f"{CONFIG['llm_model']} ({'GPU' if CONFIG['llm_num_gpu'] > 0 else 'CPU'})"
+    t = time.perf_counter()
+    try:
+        planned = plan_scene(text, characters, book.get("narrator", ""), book["glossary"])
+    except PlannerError:
+        add_stage(timeline, "planner failed", time.perf_counter() - t, kind="llm", model=llm)
+        if not typed:
+            raise
+        planned = None  # the typed scene is drawn as typed, with no character list
+    wall = time.perf_counter() - t
     if planned:
         tm = planned["timings"]
         add_stage(timeline, "unload ComfyUI models for the LLM", tm["free_comfy"], kind="image", model="ComfyUI")
@@ -1025,8 +1071,8 @@ def decide_scene(body, text, book, characters, timeline):
         if tm["review"]:
             add_stage(timeline, "review scene", tm["review"], kind="llm", model=llm)
         add_stage(timeline, "HTTP and parsing", wall - tm["wall"] - tm["review"], kind="llm", model=llm)
-    elif CONFIG.get("llm_enabled"):
-        add_stage(timeline, "no result (page text used)", wall, kind="llm", model=llm)
+    elif not typed:
+        raise NeedsSceneError("The scene planner is off (llm_enabled in config.json), so type a scene to draw.")
     info = {
         "used": bool(planned),
         "called": CONFIG.get("llm_enabled", False),
@@ -1034,11 +1080,10 @@ def decide_scene(body, text, book, characters, timeline):
         "review": planned["review"] if planned else {"used": False},
     }
     plan = plan_from_request(planned) if planned else dict(EMPTY_PLAN)
-    typed = str(body.get("scene", "")).strip()
     if typed:
         plan["scene"] = typed
         return plan, "typed", info
-    return plan, "planner" if planned else "page", info
+    return plan, "planner", info
 
 
 def generate_image(prompt_text, timeline=None, seed=None):
@@ -1340,6 +1385,12 @@ class Handler(BaseHTTPRequestHandler):
                     gpu_before = gpu_snapshot()
                     name, prompt, seed = generate_image(prompt_text, timeline, seed_req)
                     gpu_after = gpu_snapshot()
+                except NeedsSceneError as e:
+                    self._json(400, {"error": str(e)})
+                    return
+                except PlannerError as e:
+                    self._json(502, {"error": f"The scene planner failed ({e}). Try again, or type a scene."})
+                    return
                 except urllib.error.HTTPError as e:
                     log("ERROR", "ComfyUI returned an HTTP error", code=e.code, url=e.url)
                     self._json(500, {"error": f"ComfyUI returned HTTP {e.code} for {e.url}"})
