@@ -1,5 +1,6 @@
 {
   "id": "assassins-apprentice",
+  "schema_version": 2,
   "title": "Assassin's Apprentice",
   "author": "Robin Hobb",
   "series": "Farseer Trilogy",
@@ -67,87 +68,188 @@
       "visual": "dark hooded cloak, shadowy corridor, a concealed knife, watchful and cautious stance"
     }
   ],
-  "visual_style": "Classic fantasy book illustration, retro fantasy art, traditional fantasy novel cover art, high-fantasy aesthetic.\n\nClean inked outlines, distinct line art, finely drawn contours, graphic novel style.\n\nMuted and earthy color palette, cinematic lighting, warm ambient glow (especially from candles, torches, or hearth fires), soft directional shadows, painterly shading.\n\n1990s epic fantasy paperback style, nostalgic fantasy illustration, atmospheric and moody storybook art.\n\nMatte paper texture feel, subtle digital grain, clean digital painting with traditional ink-and-watercolor undertones.\n\nExpressive fantasy characters, historically-inspired rustic medieval clothing (tunics, rough leather, cloaks, simple leather boots), grounded and non-glamorous fantasy design.\n\nImmersive architectural details (rough stone walls, timber beams, medieval castle interiors or gritty coastal landscapes), lived-in and organic-looking spaces.",
+  "visual_style": "Classic fantasy illustration, clean inked outlines, finely drawn contours, muted earthy palette, painterly watercolour shading, soft directional light, matte paper texture.",
+  "style_notes": "Classic fantasy book illustration, retro fantasy art, traditional fantasy novel cover art, high-fantasy aesthetic.\n\nClean inked outlines, distinct line art, finely drawn contours, graphic novel style.\n\nMuted and earthy color palette, cinematic lighting, warm ambient glow (especially from candles, torches, or hearth fires), soft directional shadows, painterly shading.\n\n1990s epic fantasy paperback style, nostalgic fantasy illustration, atmospheric and moody storybook art.\n\nMatte paper texture feel, subtle digital grain, clean digital painting with traditional ink-and-watercolor undertones.\n\nExpressive fantasy characters, historically-inspired rustic medieval clothing (tunics, rough leather, cloaks, simple leather boots), grounded and non-glamorous fantasy design.\n\nImmersive architectural details (rough stone walls, timber beams, medieval castle interiors or gritty coastal landscapes), lived-in and organic-looking spaces.",
   "characters": [
     {
       "name": "Fitz",
-      "description": "young man around fifteen, tall, dark hair worn long and tied back, dark eyes, scar on the left shoulder, plain brown working clothes"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "teen",
+      "species": "",
+      "look": "about fifteen, slim and beardless, dark hair tied back, dark eyes, plain brown working clothes"
     },
     {
       "name": "Molly",
-      "description": "young woman around seventeen, dark hair past her shoulders, plain blouse and red wool skirt"
+      "aliases": [],
+      "kind": "person",
+      "sex": "female",
+      "age": "young adult",
+      "species": "",
+      "look": "around seventeen, dark hair past her shoulders, plain blouse and red wool skirt"
     },
     {
       "name": "Burrich",
-      "description": "stablemaster, wild black hair and beard, narrow angular face, weathered skin, brown eyes, long deft hands, slight limp, leather and wool working clothes"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "adult",
+      "species": "",
+      "look": "stablemaster, wild black hair and beard, narrow angular face, weathered skin, brown eyes, long deft hands, slight limp, leather and wool working clothes"
     },
     {
       "name": "Chade",
-      "description": "old man, robe the colour of undyed sheep's wool, untidy pale hair and beard, face pitted with small pink pox scars, bony hands with papery white skin and angry red scars on the back of the left hand, green eyes"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "elderly",
+      "species": "",
+      "look": "robe the colour of undyed sheep's wool, untidy pale hair and beard, face pitted with small pink pox scars, bony hands with papery white skin and angry red scars on the back of the left hand, green eyes"
     },
     {
       "name": "Verity",
-      "description": "prince, stocky with a barrel chest and broad shoulders, square work-scarred fists, dark tousled hair, short dark unkempt beard, black eyes, heavy brows, muted woollen clothes with a buck's-head buckle"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "adult",
+      "species": "",
+      "look": "a prince, stocky, bearded, dark tousled hair, black eyes, heavy brows, muted woollen clothes with a buck's-head buckle"
     },
     {
       "name": "Regal",
-      "description": "prince, beardless, brown hair smoothed and scented, jaw and eyes like Verity's, scarlet and primrose clothes, oversized cloak, cream lace-trimmed doublet, scarf fastened with a gold stag brooch with a green stone eye"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "young adult",
+      "species": "",
+      "look": "a prince, beardless, brown hair smoothed and scented, strong Farseer jaw and dark eyes, scarlet and primrose clothes, oversized cloak, cream lace-trimmed doublet, scarf fastened with a gold stag brooch with a green stone eye"
     },
     {
       "name": "Shrewd",
-      "description": "the king, older man, freshly groomed hair and beard, immaculate clothes with silk at the throat, brown eyes"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "middle-aged",
+      "species": "",
+      "look": "the king, freshly groomed hair and beard, immaculate clothes with silk at the throat, brown eyes"
     },
     {
       "name": "Chivalry",
-      "description": "Fitz's father, tall and dark-haired, Fitz is said to look much like him"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "adult",
+      "species": "",
+      "look": "a prince, tall and dark-haired"
     },
     {
       "name": "Galen",
-      "description": "duke, about Burrich's age, prominent cheekbones, skinny cheeks, pale eyes, hawk nose, richly dressed with a fur-trimmed collar, amber-bead vest, snug tailored jacket, calf-high boots, chain of three gems"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "adult",
+      "species": "",
+      "look": "a duke, prominent cheekbones, skinny cheeks, pale eyes, hawk nose, richly dressed with a fur-trimmed collar, amber-bead vest, snug tailored jacket, calf-high boots, chain of three gems"
     },
     {
       "name": "Patience",
-      "description": "short slender woman, hazel eyes, straight mouth, dark curly hair she tries to tame with ringlets escaping at her forehead and neck"
+      "aliases": [],
+      "kind": "person",
+      "sex": "female",
+      "age": "adult",
+      "species": "",
+      "look": "short and slender, hazel eyes, dark curly hair"
     },
     {
       "name": "Lacey",
-      "description": "round face, dimples"
+      "aliases": [],
+      "kind": "person",
+      "sex": "female",
+      "age": "young adult",
+      "species": "",
+      "look": "round face, dimples"
     },
     {
       "name": "Kettricken",
-      "description": "young woman, jade-green eyes, straight nose, solemn mouth, muscular arms, thick yellow hair in braids coiled around her head or loose down her back"
+      "aliases": [],
+      "kind": "person",
+      "sex": "female",
+      "age": "young adult",
+      "species": "",
+      "look": "jade-green eyes, straight nose, solemn mouth, muscular arms, thick yellow hair in braids coiled around her head or loose down her back"
     },
     {
       "name": "Rurisk",
-      "description": "older than Kettricken and very similar to her in face, jade eyes, straight nose, solemn mouth, hair cut very short at the collar"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "adult",
+      "species": "",
+      "look": "jade eyes, straight nose, solemn mouth, hair cut very short at the collar"
     },
     {
       "name": "August",
-      "description": "boy about thirteen, dark-toned hair, broad build like Verity"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "teen",
+      "species": "",
+      "look": "about thirteen, dark-toned hair, broad build"
     },
     {
       "name": "Cob",
-      "description": "boy about ten, short dark hair"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "child",
+      "species": "",
+      "look": "about ten, short dark hair"
     },
     {
       "name": "Fool",
-      "description": "very pale skin with a faint pink tint, pale blue eyes, pale fluffy dandelion-yellow hair, small widely spaced white teeth, motley of black and white in winter or blue and red silk in summer"
+      "aliases": [],
+      "kind": "person",
+      "sex": "unspecified",
+      "age": "adult",
+      "species": "",
+      "look": "very pale skin with a faint pink tint, pale blue eyes, pale fluffy dandelion-yellow hair, small widely spaced white teeth, motley of black and white in winter or blue and red silk in summer"
     },
     {
       "name": "Nighteyes",
-      "description": "grey wolf, green eyes as a cub and dark eyes as an adult, dark muzzle, buff fur at the ears and throat, coat flecked with stiff black hairs, very large feet"
+      "aliases": [],
+      "kind": "animal",
+      "sex": "",
+      "age": "",
+      "species": "wolf",
+      "look": "grey, green eyes as a cub and dark eyes as an adult, dark muzzle, buff fur at the ears and throat, coat flecked with stiff black hairs, very large feet"
     },
     {
       "name": "Nosy",
-      "description": "hound with a stick-like tail, red fur and copper eyes as an adult"
+      "aliases": [],
+      "kind": "animal",
+      "sex": "",
+      "age": "",
+      "species": "hound",
+      "look": "a stick-like tail, red fur and copper eyes as an adult"
     },
     {
       "name": "Vixen",
-      "description": "old hound with a stick-like tail, whitened muzzle, one torn ear"
+      "aliases": [],
+      "kind": "animal",
+      "sex": "",
+      "age": "",
+      "species": "hound",
+      "look": "old, a stick-like tail, whitened muzzle, one torn ear"
     },
     {
       "name": "Smithy",
-      "description": "black terrier with a black nose, short smooth coat, thick neck, white spots on the chin and left hind foot"
+      "aliases": [],
+      "kind": "animal",
+      "sex": "",
+      "age": "",
+      "species": "terrier",
+      "look": "black, a black nose, short smooth coat, thick neck, white spots on the chin and left hind foot"
     }
   ]
 }
