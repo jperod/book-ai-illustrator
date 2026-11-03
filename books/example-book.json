@@ -1,5 +1,6 @@
 {
   "id": "example-book",
+  "schema_version": 2,
   "title": "Example Book",
   "author": "Author Name",
   "series": "",
@@ -8,11 +9,22 @@
   "characters": [
     {
       "name": "Mara",
-      "description": "young woman, short dark hair, green travelling cloak, leather boots"
+      "aliases": [],
+      "kind": "person",
+      "sex": "female",
+      "age": "young adult",
+      "species": "",
+      "look": "short dark hair, green travelling cloak, leather boots"
     },
     {
       "name": "Tomas",
-      "description": "older man with a grey beard, broad shoulders, patched brown coat"
+      "aliases": [],
+      "kind": "person",
+      "sex": "male",
+      "age": "middle-aged",
+      "species": "",
+      "look": "grey beard, broad shoulders, patched brown coat"
     }
-  ]
+  ],
+  "glossary": []
 }
